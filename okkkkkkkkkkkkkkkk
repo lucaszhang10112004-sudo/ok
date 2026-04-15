@@ -313,3 +313,43 @@ par(mfrow = c(1, 1))
 
 
 
+# ==========================================
+# Lee-Carter reconstruit sur la cohorte 1940
+# ==========================================
+
+reconstruire_qc_LC_cohorte <- function(cohorte, rates_fc, ages, S = 20) {
+  
+  years_fc <- as.numeric(colnames(rates_fc))
+  
+  ages_sub <- ages[ages >= S]
+  years_coh <- cohorte + ages_sub
+  
+  # on garde seulement les couples (age, year) disponibles
+  ok <- years_coh %in% years_fc
+  
+  ages_ok <- ages_sub[ok]
+  years_ok <- years_coh[ok]
+  
+  mx_vec <- sapply(seq_along(ages_ok), function(i) {
+    rates_fc[as.character(ages_ok[i]), as.character(years_ok[i])]
+  })
+  
+  qx <- 1 - exp(-mx_vec)
+  qx[qx < 0 | qx > 1] <- NA
+  
+  qc <- numeric(length(qx))
+  qc[1] <- 0
+  
+  for (j in 2:length(qx)) {
+    qc[j] <- 1 - prod(1 - qx[1:(j - 1)])
+  }
+  
+  data.frame(
+    Cohorte = cohorte,
+    Age = ages_ok,
+    Year = years_ok,
+    qx = qx,
+    qc = qc
+  )
+}
+
