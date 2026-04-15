@@ -1,2 +1,240 @@
 
-123
+library(tidyverse)
+library(ggplot2)
+
+# ============================================================
+# A. DONNEES COHORTE POUR ID-SEM
+# ============================================================
+
+FILE_PATH_COHORTE <- "France_1x1.txt"
+AGE_MIN_ID <- 20
+T_ID <- 50
+XC_ID <- 1000
+
+cohortes_comp <- 1905:2003
+
+donnees_cohortes <- read.table(FILE_PATH_COHORTE, header = TRUE, na.strings = ".", skip = 2) %>%
+  mutate(
+    Age = readr::parse_number(as.character(Age)),
+    Year = as.numeric(Year),
+    lx = as.numeric(lx)
+  ) %>%
+  filter(Age >= AGE_MIN_ID) %>%
+  group_by(Year) %>%
+  mutate(
+    l_ref = first(lx),
+    F_empirique = 1 - (lx / l_ref)
+  ) %>%
+  ungroup() %>%
+  filter(!is.na(F_empirique))
+
+
+# ============================================================
+# B. MODELE C ID-SEM
+# ============================================================
+
+calcul_M_id <- function(t, alpha, beta, gamma, T = T_ID) {
+  t <- as.numeric(t)
+
+  M <- alpha * t
+  idx <- t > T
+
+  if (any(idx)) {
+    t_sup <- t[idx]
+    if (abs(gamma) < 1e-8) {
+      M[idx] <- alpha * t_sup + beta * (t_sup - T)
+    } else {
+      M[idx] <- alpha * t_sup + (beta / gamma) * (exp(gamma * (t_sup - T)) - 1)
+    }
+  }
+  M
+}
+
+modele_qc_id <- function(t, alpha, beta, gamma, kappa, XC = XC_ID) {
+  M_t <- calcul_M_id(t, alpha, beta, gamma)
+
+  variance_term <- (2 * M_t) / kappa
+  variance_term[!is.finite(variance_term) | variance_term <= 1e-9] <- 1e-9
+  sqrt_var <- sqrt(variance_term)
+
+  term1 <- pnorm((XC + M_t) / sqrt_var)
+  term2 <- exp(-kappa * XC) * pnorm((-XC + M_t) / sqrt_var)
+
+  out <- 1 - term1 + term2
+  out[!is.finite(out)] <- NA_real_
+  out
+}
+
+modele_cond_id <- function(t, S, alpha, beta, gamma, kappa) {
+  F_t <- modele_qc_id(t, alpha, beta, gamma, kappa)
+  F_S <- modele_qc_id(S, alpha, beta, gamma, kappa)
+
+  denom <- 1 - F_S
+  if (!is.finite(denom) || denom <= 1e-10) return(rep(1e12, length(t)))
+
+  out <- (F_t - F_S) / denom
+  out[!is.finite(out)] <- NA_real_
+  out
+}
+
+erreur_id <- function(params, data) {
+  a <- params[1]; b <- params[2]; g <- params[3]; k <- params[4]
+
+  if (a > 0 || b > 0 || g <= 0 || k > 0) return(1e15)
+
+  pred <- modele_cond_id(data$Age, AGE_MIN_ID, a, b, g, k)
+
+  if (any(!is.finite(pred))) return(1e15)
+  if (any(pred < 0 | pred > 1)) return(1e15)
+
+  sum((pred - data$F_empirique)^2)
+}
+
+
+
+
+# ============================================================
+# C. CALIBRAGE HISTORIQUE ID-SEM
+# ============================================================
+
+points_depart <- list(
+  c(-11.5, -3.5, 0.10, -0.0030),
+  c(-9.7,  -9.5, 0.12, -0.0020),
+  c(-5.0,  -1.0, 0.08, -0.0010)
+)
+
+resultats_id <- data.frame(
+  Cohorte = cohortes_comp,
+  alpha = NA, beta = NA, gamma = NA, kappa = NA, erreur = NA
+)
+
+for (i in seq_along(cohortes_comp)) {
+  annee <- cohortes_comp[i]
+  df_y <- donnees_cohortes %>% filter(Year == annee)
+
+  if (nrow(df_y) == 0) next
+
+  meilleur_res <- NULL
+  meilleure_err <- Inf
+
+  for (start_par in points_depart) {
+    res <- try(
+      optim(
+        par = start_par,
+        fn = erreur_id,
+        data = df_y,
+        method = "L-BFGS-B",
+        lower = c(-20, -20, 0.001, -0.05),
+        upper = c(-0.001, -0.001, 1, -1e-6),
+        control = list(maxit = 5000)
+      ),
+      silent = TRUE
+    )
+
+    if (!inherits(res, "try-error") && is.finite(res$value) && res$value < meilleure_err) {
+      meilleur_res <- res
+      meilleure_err <- res$value
+    }
+  }
+
+  if (!is.null(meilleur_res)) {
+    resultats_id[i, 2:5] <- meilleur_res$par
+    resultats_id[i, 6] <- meilleure_err
+    points_depart[[1]] <- meilleur_res$par
+  }
+}
+
+resultats_id <- na.omit(resultats_id)
+
+
+
+
+
+
+# ============================================================
+# D. CONVERSION COHORTE -> PERIODE
+# ============================================================
+
+ages_comp <- 20:95
+years_comp <- 2000:2023
+
+# matrice prédite par ID-SEM
+mx_id_mat <- matrix(
+  NA,
+  nrow = length(ages_comp),
+  ncol = length(years_comp),
+  dimnames = list(as.character(ages_comp), as.character(years_comp))
+)
+
+for (i in seq_len(nrow(resultats_id))) {
+  c0 <- resultats_id$Cohorte[i]
+  pars <- as.numeric(resultats_id[i, c("alpha", "beta", "gamma", "kappa")])
+
+  # F(x|20) pour x = 20:95
+  F_x <- modele_cond_id(
+    t = ages_comp,
+    S = AGE_MIN_ID,
+    alpha = pars[1],
+    beta  = pars[2],
+    gamma = pars[3],
+    kappa = pars[4]
+  )
+
+  # q_x cohorte
+  q_x <- rep(NA_real_, length(ages_comp))
+  q_x[1] <- F_x[1]
+  for (j in 2:length(ages_comp)) {
+    denom <- 1 - F_x[j - 1]
+    if (is.finite(denom) && denom > 1e-10) {
+      q_x[j] <- (F_x[j] - F_x[j - 1]) / denom
+    }
+  }
+
+  q_x[q_x <= 0] <- NA
+  q_x[q_x >= 1] <- NA
+
+  # approximation m_x ~ -log(1-q_x)
+  mx_x <- -log(1 - q_x)
+
+  # placement sur année période t = c + x
+  for (j in seq_along(ages_comp)) {
+    age_j <- ages_comp[j]
+    year_j <- c0 + age_j
+
+    if (year_j %in% years_comp) {
+      mx_id_mat[as.character(age_j), as.character(year_j)] <- mx_x[j]
+    }
+  }
+}
+
+# observé
+mx_obs_mat <- Dxt[as.character(ages_comp), as.character(years_comp)] /
+  Ext[as.character(ages_comp), as.character(years_comp)]
+
+# Lee-Carter
+mx_lc_mat <- fc_leec$rates[as.character(ages_comp), as.character(years_comp)]
+
+
+
+
+
+
+
+log_mx_obs_bar <- rowMeans(log(mx_obs_mat), na.rm = TRUE)
+log_mx_lc_bar  <- rowMeans(log(mx_lc_mat), na.rm = TRUE)
+log_mx_id_bar  <- rowMeans(log(mx_id_mat), na.rm = TRUE)
+
+plot(ages_comp, log_mx_obs_bar, type = "l", lwd = 2,
+     col = "black",
+     xlab = "Age", ylab = "log(m_x)",
+     main = "Comparaison Lee-Carter / ID-SEM / Observé")
+
+lines(ages_comp, log_mx_lc_bar, col = "red", lwd = 2, lty = 2)
+lines(ages_comp, log_mx_id_bar, col = "blue", lwd = 2, lty = 3)
+
+legend("topleft",
+       legend = c("Observé", "Lee-Carter", "ID-SEM"),
+       col = c("black", "red", "blue"),
+       lty = c(1, 2, 3),
+       lwd = 2,
+       bty = "n")
