@@ -1,0 +1,125 @@
+rm(list = ls())
+
+death <- read.table("Deaths_1x1.txt",
+  header = TRUE,
+  sep = "",            
+  fill = TRUE,
+  comment.char = "",  
+  stringsAsFactors = FALSE,
+  skip = 1
+)
+
+expo <- read.table("Exposures_1x1.txt",
+  header = TRUE,
+  sep = "",           
+  fill = TRUE,
+  comment.char = "",  
+  stringsAsFactors = FALSE,
+  skip = 1
+)
+
+library(StMoMo)
+library(dplyr)
+library(tidyr)
+
+
+ages_fit  <- 20:95
+years_total <- 1950:2023
+years_fit <- 1950:1990
+years_obs <- 2000:2023
+
+death_f <- death %>%
+  filter(Age %in% ages_fit, Year %in% years_total)
+
+expo_f <- expo %>%
+  filter(Age %in% ages_fit, Year %in% years_total)
+
+Dxt <- death_f %>%
+  select(Year, Age, Total) %>%
+  pivot_wider(names_from = Year, values_from = Total) %>%
+  arrange(Age)
+
+Ext <- expo_f %>%
+  select(Year, Age, Total) %>%
+  pivot_wider(names_from = Year, values_from = Total) %>%
+  arrange(Age)
+
+
+Dxt <- as.matrix(Dxt[ , -1])
+Ext <- as.matrix(Ext[ , -1])
+
+
+rownames(Dxt) <- ages_fit
+rownames(Ext) <- ages_fit
+
+range(as.integer(rownames(Dxt)))
+range(as.integer(colnames(Dxt)))
+
+
+D_fit <- Dxt[as.character(ages_fit), as.character(years_fit)]
+E_fit <- Ext[as.character(ages_fit), as.character(years_fit)]
+
+lee_carter <- lc(link = "log")
+
+fit_leec <- fit(
+  lee_carter,
+  Dxt = D_fit,
+  Ext = E_fit,
+  ages = ages_fit,
+  years = years_fit,
+  ages.fit = ages_fit
+)
+
+
+h <- 2023 - max(years_fit)
+fc_leec <- forecast(fit_leec, h = h)
+
+rates_fc <- fc_leec$rates  
+
+mx_2000 <- rates_fc[, "2000"]
+mx_2023 <- rates_fc[, "2023"]
+
+
+mx_obs_00_23 <- Dxt[as.character(ages_fit), as.character(years_obs)] /  Ext[as.character(ages_fit), as.character(years_obs)]
+
+log_mx_bar_obs <- rowMeans(log(mx_obs_00_23), na.rm = TRUE)
+
+
+years_proj <- 2000:2023
+
+mx_00_23_pred <- rates_fc[, as.character(years_proj)]
+log_mx_bar_00_23_pred_lc <- rowMeans(log(mx_00_23_pred), na.rm = TRUE)
+
+
+
+plot(ages_fit, log_mx_bar_obs, type = "l", col = "blue" ,
+     lty = 1,
+     xlab = "age", ylab = "log(m_x) (homme + femme)",
+     main = "modele lee-carter, données vs prediction (data homme + femme)" ,
+     cex.main = 0.9)
+
+lines(ages_fit, log_mx_bar_00_23_pred_lc, col = "red" ,
+      lty = 2)
+
+legend("topleft",
+       legend = c("donnée observée", "lee-carter"),
+       col = c("blue", "red"),
+       lty = c(1,2), bty = "n")
+
+
+kt_fit <- fit_leec$kt
+kt_proj <- as.numeric(fc_leec$kt.f$mean)
+
+i <- length(kt_proj)
+years_total2 <- c(years_fit, (max(years_fit)+ 1):(max(years_fit)+ i))
+
+kt_all <- c(kt_fit, kt_proj)
+
+plot(years_total2, kt_all, type="l", lwd=2,
+     xlab="annee", ylab=expression(k[t]),
+     main=expression(" k_t " ),
+     col = "green",
+     cex.main=0.9)
+
+abline(v = 1990 , lty= 3)
+
