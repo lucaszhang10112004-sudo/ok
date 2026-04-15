@@ -95,3 +95,77 @@ for (c0 in cohortes_a_comparer) {
 }
 
 par(mfrow = c(1, 1))
+
+
+
+
+comparaison_cohorte <- function(cohorte, res_list, rates_fc, age_min = 20, age_max = 95) {
+  
+  ages <- age_min:age_max
+  years_fc <- as.numeric(colnames(rates_fc))
+  
+  # années correspondant à la cohorte
+  years_coh <- cohorte + ages
+  
+  # garder seulement les âges disponibles dans Lee-Carter
+  ok <- years_coh %in% years_fc
+  
+  ages_ok <- ages[ok]
+  years_ok <- years_coh[ok]
+  
+  # Lee-Carter
+  mx_lc <- sapply(seq_along(ages_ok), function(i) {
+    rates_fc[as.character(ages_ok[i]), as.character(years_ok[i])]
+  })
+  
+  # ID-SEM
+  pars <- res_list[[as.character(cohorte)]]$par
+  
+  Fx <- modele_C_cond(
+    t = ages_ok,
+    S = 20,
+    alpha = pars[1],
+    beta  = pars[2],
+    gamma = pars[3],
+    kappa = pars[4]
+  )
+  
+  qx <- rep(NA_real_, length(Fx))
+  qx[1] <- Fx[1]
+  
+  for (j in 2:length(Fx)) {
+    denom <- 1 - Fx[j - 1]
+    if (is.finite(denom) && denom > 1e-10) {
+      qx[j] <- (Fx[j] - Fx[j - 1]) / denom
+    }
+  }
+  
+  qx[qx <= 0 | qx >= 1] <- NA
+  mx_id <- -log(1 - qx)
+  
+  data.frame(
+    Cohorte = cohorte,
+    Age = ages_ok,
+    Year = years_ok,
+    mx_lc = as.numeric(mx_lc),
+    mx_id = as.numeric(mx_id)
+  )
+df_comp <- comparaison_cohorte(1940, res_list, rates_fc)
+
+plot(df_comp$Age, log(df_comp$mx_lc),
+     type = "l", col = "red", lwd = 2,
+     xlab = "Age", ylab = "log(m_x)",
+     main = "Cohorte 1940")
+
+lines(df_comp$Age, log(df_comp$mx_id),
+      col = "blue", lwd = 2, lty = 2)
+
+legend("topleft",
+       legend = c("Lee-Carter", "ID-SEM"),
+       col = c("red", "blue"),
+       lty = c(1, 2),
+       lwd = 2,
+       bty = "n")
+
+
+}
