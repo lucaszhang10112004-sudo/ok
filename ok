@@ -1,0 +1,510 @@
+# ============================================================
+# PARTIE 1 — ID-SEM
+# MODELE C
+# ============================================================
+
+library(tidyverse)
+library(tibble)
+
+# ============================================================
+# 1. PARAMETRES GLOBAUX
+# ============================================================
+
+AGE_MIN <- 20
+T <- 50
+x_c <- 1000
+
+# ============================================================
+# 2. PREPARATION DES DONNEES COHORTE
+# ============================================================
+
+
+charger_donnees_cohortes <- function(file_path, age_min = 20) {
+  
+  donnees_globales <- read.table(file_path, header = TRUE, na.strings = ".", skip = 2) %>%
+    mutate(
+      Age = parse_number(as.character(Age)),
+      Year = as.numeric(Year),
+      lx = as.numeric(lx)
+    ) %>%
+    filter(Age >= age_min) %>%
+    group_by(Year) %>%
+    mutate(
+      l_ref = first(lx),
+      qhat_cond = 1 - (lx / l_ref)
+    ) %>%
+    ungroup() %>%
+    filter(!is.na(qhat_cond))
+  
+  return(donnees_globales)
+}
+
+# ============================================================
+# 3. MODELE C
+# ============================================================
+
+# on prendd : 
+# M(t) = alpha * t                      si t <= T
+# M(t) = alpha * t + (beta/gamma)(exp(gamma(t-T)) - 1) si t > T
+
+AGE_MIN <- 20
+T <- 50
+x_c <- 1000
+
+calcul_M <- function(t, alpha, beta, gamma, T) {
+  t <- as.numeric(t)
+
+  M <- alpha * t
+  idx <- t > T
+
+  if (any(idx)) {
+    t_sup <- t[idx]
+    M[idx] <- alpha * t_sup +
+      (beta / gamma) * (exp(gamma * (t_sup - T)) - 1)
+  }
+
+  return(M)
+}
+
+modele_qc <- function(t, alpha, beta, gamma, kappa, x_c, T) {
+  M_t <- calcul_M(t, alpha, beta, gamma, T)
+
+  terme_variance <- (2 * M_t) / kappa
+  terme_variance[!is.finite(terme_variance) | terme_variance <= 1e-10] <- 1e-10
+
+  racine <- sqrt(terme_variance)
+
+  terme_1 <- pnorm((x_c + M_t) / racine)
+  terme_2 <- exp(-kappa * x_c) * pnorm((-x_c + M_t) / racine)
+
+  qc <- 1 - terme_1 + terme_2
+  return(qc)
+}
+
+modele_cond <- function(t, S, alpha, beta, gamma, kappa, x_c, T) {
+  F_t <- modele_qc(t, alpha, beta, gamma, kappa, x_c, T)
+  F_S <- modele_qc(S, alpha, beta, gamma, kappa, x_c, T)
+
+  denom <- 1 - F_S
+
+  if (!is.finite(denom) || denom < 1e-10) {
+    return(rep(1e12, length(t)))
+  }
+
+  q_cond <- (F_t - F_S) / denom
+  return(q_cond)
+}
+
+erreur_C <- function(params, data) {
+  alpha <- params[1]
+  beta  <- params[2]
+  gamma <- params[3]
+  kappa <- params[4]
+
+  if (alpha > 0 || beta > 0 || gamma < 0 || kappa > 0) {
+    return(1e12)
+  }
+
+  pred <- modele_cond(
+    t = data$Age,
+    S = AGE_MIN,
+    alpha = alpha,
+    beta = beta,
+    gamma = gamma,
+    kappa = kappa,
+    x_c = x_c,
+    T = T
+  )
+
+  if (any(!is.finite(pred))) {
+    return(1e12)
+  }
+
+  return(sum((pred - data$qhat_cond)^2))
+}
+
+fit_modele_C <- function(data_year, par_depart = c(-10, -5, 0.1, -0.002)) {
+  optim(
+    par = par_depart,
+    fn = erreur_C,
+    data = data_year,
+    method = "Nelder-Mead"
+  )
+}
+
+# ============================================================
+# 6. PETIT TEST LOCAL
+# ============================================================
+
+
+donnees_globales <- charger_donnees_cohortes("France_1x1.txt")
+
+data_year <- donnees_globales %>% filter(Year == 1900)
+
+res <- fit_modele_C(data_year)
+
+res$par
+res$value
+
+age <- data_year$Age
+courbe_ajustee <- modele_cond(
+   t = age,
+   S = AGE_MIN,
+   alpha = res$par[1],
+   beta  = res$par[2],
+   gamma = res$par[3],
+   kappa = res$par[4],
+   x_c = x_c,
+   T = T
+)
+
+plot(age, data_year$qhat_cond, pch = 19, col = "black")
+lines(age, courbe_ajustee, col = "red", lwd = 2)
+
+
+# ============================================================
+# PARTIE 2 — CALIBRAGE HISTORIQUE ID-SEM
+# MODELE C
+# ============================================================
+
+library(tidyverse)
+library(tibble)
+
+# ============================================================
+# 1. PARAMETRES GLOBAUX
+# ============================================================
+
+ANNEE_DEBUT <- 1900
+ANNEE_FIN   <- 1930
+PAS_TEMPS   <- 1
+
+cohortes <- seq(ANNEE_DEBUT, ANNEE_FIN, PAS_TEMPS)
+
+# ============================================================
+# 2. TABLEAU DE STOCKAGE
+# ============================================================
+
+resultats_historique <- data.frame(
+  Cohorte = cohortes,
+  alpha = NA,
+  beta  = NA,
+  gamma = NA,
+  kappa = NA,
+  erreur = NA
+)
+
+# ============================================================
+# 3. CALIBRAGE HISTORIQUE
+# ============================================================
+
+calibrer_historique_modele_C <- function(
+  donnees_globales,
+  cohortes,
+  par_depart = c(-10, -5, 0.1, -0.002)
+) {
+
+  resultats_historique <- data.frame(
+    Cohorte = cohortes,
+    alpha = NA,
+    beta  = NA,
+    gamma = NA,
+    kappa = NA,
+    erreur = NA
+  )
+
+  start <- par_depart
+
+  cat("Calibration historique en cours...\n")
+
+  for (i in seq_along(cohortes)) {
+
+    annee <- cohortes[i]
+
+    data_year <- donnees_globales %>%
+      filter(Year == annee)
+
+    if (nrow(data_year) == 0) next
+
+    res <- try(
+      fit_modele_C(
+        data_year = data_year,
+        par_depart = start
+      ),
+      silent = TRUE
+    )
+
+    if (inherits(res, "try-error")) next
+
+    resultats_historique[i, 2:5] <- res$par
+    resultats_historique[i, 6]   <- res$value
+
+    # hot start : on repart du résultat précédent
+    start <- res$par
+  }
+
+  cat("Calibration terminée.\n")
+
+  return(na.omit(resultats_historique))
+}
+
+
+
+resultats_historique <- calibrer_historique_modele_C(
+  donnees_globales = donnees_globales,
+  cohortes = cohortes,
+  par_depart = c(-10, -5, 0.1, -0.002)
+)
+
+head(resultats_historique)
+tail(resultats_historique)
+
+
+
+
+plot(resultats_historique$Cohorte, resultats_historique$alpha,
+     type = "l", lwd = 2,
+     main = expression(alpha[c]),
+     xlab = "Cohorte", ylab = "alpha")
+
+plot(resultats_historique$Cohorte, resultats_historique$beta,
+     type = "l", lwd = 2,
+     main = expression(beta[c]),
+     xlab = "Cohorte", ylab = "beta")
+
+plot(resultats_historique$Cohorte, resultats_historique$gamma,
+     type = "l", lwd = 2,
+     main = expression(gamma[c]),
+     xlab = "Cohorte", ylab = "gamma")
+
+plot(resultats_historique$Cohorte, resultats_historique$kappa,
+     type = "l", lwd = 2,
+     main = expression(kappa[c]),
+     xlab = "Cohorte", ylab = "kappa")
+
+
+# ============================================================
+# PARTIE 3 — PROJECTION DES PARAMETRES
+# MODELE C
+# ============================================================
+
+library(tidyverse)
+library(tibble)
+library(ggplot2)
+
+# ============================================================
+# 1. COHORTES CIBLES
+# ============================================================
+
+ANNEE_CIBLE <- c(1940, 1950, 1960, 1970)
+
+# ============================================================
+# 2. REGRESSIONS SUR LES PARAMETRES HISTORIQUES
+# ============================================================
+
+fit_alpha <- lm(alpha       ~ Cohorte, data = resultats_historique)
+fit_beta  <- lm(beta        ~ Cohorte, data = resultats_historique)
+fit_gamma <- lm(gamma       ~ Cohorte, data = resultats_historique)
+fit_kappa <- lm(kappa       ~ Cohorte, data = resultats_historique)
+
+# ============================================================
+# 3. PREDICTIONS DES PARAMETRES
+# ============================================================
+
+pred_alpha <- predict(
+  fit_alpha, newdata = data.frame(Cohorte = c(cohortes, ANNEE_CIBLE))
+)
+
+pred_beta <- predict(
+  fit_beta, newdata = data.frame(Cohorte = c(cohortes, ANNEE_CIBLE))
+)
+
+pred_gamma <- predict(
+  fit_gamma,
+  newdata = data.frame(Cohorte = c(cohortes, ANNEE_CIBLE))
+)
+
+pred_kappa <- predict(
+  fit_kappa, newdata = data.frame(Cohorte = c(cohortes, ANNEE_CIBLE))
+)
+
+df_pred <- data.frame(
+  Cohorte = c(cohortes, ANNEE_CIBLE),
+  alpha = pred_alpha,
+  beta  = pred_beta,
+  gamma = pred_gamma,
+  kappa = pred_kappa
+)
+
+df_pred_cible <- df_pred %>% filter(Cohorte %in% ANNEE_CIBLE)
+
+
+
+
+calculer_bornes <- function(model_lm, annee_cible, z_score) {
+  
+  pred <- predict(
+    model_lm,
+    newdata = data.frame(Cohorte = annee_cible),
+    se.fit = TRUE
+  )
+  
+  se_total <- sqrt(pred$se.fit^2 + summary(model_lm)$sigma^2)
+  
+  list(
+    valeur = pred$fit,
+    min = pred$fit - z_score * se_total,
+    max = pred$fit + z_score * se_total
+  )
+}
+
+#borne pour prediction
+
+calculer_bornes_exp_neg <- function(model_lm, annee_cible, z_score) {
+  
+  pred <- predict(
+    model_lm,
+    newdata = data.frame(Cohorte = annee_cible),
+    se.fit = TRUE
+  )
+  
+  se_total <- sqrt(pred$se.fit^2 + summary(model_lm)$sigma^2)
+  
+  centre <- pred$fit
+  borne_inf_log <- centre - z_score * se_total
+  borne_sup_log <- centre + z_score * se_total
+  
+  list(
+    valeur = -exp(centre),
+    min = -exp(borne_sup_log),
+    max = -exp(borne_inf_log)
+  )
+}
+
+#borne pour cohorte
+
+z <- qnorm(1 - 0.05/2)
+
+bornes_alpha <- calculer_bornes_exp_neg(fit_alpha, ANNEE_CIBLE, z)
+bornes_beta  <- calculer_bornes_exp_neg(fit_beta,  ANNEE_CIBLE, z)
+bornes_gamma <- calculer_bornes(fit_gamma, ANNEE_CIBLE, z)
+bornes_kappa <- calculer_bornes_exp_neg(fit_kappa, ANNEE_CIBLE, z)
+
+limites_inf <- list(
+  alpha = bornes_alpha$min,
+  beta  = bornes_beta$min,
+  gamma = bornes_gamma$min,
+  kappa = bornes_kappa$min
+)
+
+limites_sup <- list(
+  alpha = bornes_alpha$max,
+  beta  = bornes_beta$max,
+  gamma = bornes_gamma$max,
+  kappa = bornes_kappa$max
+)
+
+points_depart <- list(
+  alpha = bornes_alpha$valeur,
+  beta  = bornes_beta$valeur,
+  gamma = bornes_gamma$valeur,
+  kappa = bornes_kappa$valeur
+)
+
+
+#esti des cohortes sous contraintes
+
+estimer_parametres_par_cohorte <- function(
+  donnees_globales,
+  annees_cibles,
+  points_depart,
+  limites_inf,
+  limites_sup
+) {
+  
+  res_list <- vector("list", length(annees_cibles))
+  names(res_list) <- as.character(annees_cibles)
+  
+  for (i in seq_along(annees_cibles)) {
+    
+    annee <- annees_cibles[i]
+    
+    donnees_cible <- donnees_globales %>%
+      filter(Year == annee)
+    
+    par_i <- c(
+      points_depart$alpha[i],
+      points_depart$beta[i],
+      points_depart$gamma[i],
+      points_depart$kappa[i]
+    )
+    
+    lower_i <- c(
+      limites_inf$alpha[i],
+      limites_inf$beta[i],
+      limites_inf$gamma[i],
+      limites_inf$kappa[i]
+    )
+    
+    upper_i <- c(
+      limites_sup$alpha[i],
+      limites_sup$beta[i],
+      limites_sup$gamma[i],
+      limites_sup$kappa[i]
+    )
+    
+    res <- optim(
+      par    = par_i,
+      fn     = erreur_C,
+      data   = donnees_cible,
+      method = "L-BFGS-B",
+      lower  = lower_i,
+      upper  = upper_i
+    )
+    
+    res_list[[as.character(annee)]] <- list(
+      Year = annee,
+      par = setNames(res$par, c("alpha", "beta", "gamma", "kappa")),
+      value = res$value
+    )
+  }
+  
+  return(res_list)
+}
+
+res_list <- estimer_parametres_par_cohorte(
+  donnees_globales = donnees_globales,
+  annees_cibles = ANNEE_CIBLE,
+  points_depart = points_depart,
+  limites_inf = limites_inf,
+  limites_sup = limites_sup
+)
+
+ggplot(resultats_historique, aes(Cohorte, alpha)) +
+  geom_point() +
+  geom_point(data = df_pred_cible, aes(Cohorte, alpha), color = "red", size = 2) +
+  geom_line(data = df_pred, aes(Cohorte, alpha), color = "red") +
+  xlim(min(cohortes), max(ANNEE_CIBLE)) +
+  theme_minimal()
+
+ggplot(resultats_historique, aes(Cohorte, beta)) +
+  geom_point() +
+  geom_point(data = df_pred_cible, aes(Cohorte, beta), color = "red", size = 2) +
+  geom_line(data = df_pred, aes(Cohorte, beta), color = "red") +
+  xlim(min(cohortes), max(ANNEE_CIBLE)) +
+  theme_minimal()
+
+ggplot(resultats_historique, aes(Cohorte, gamma)) +
+  geom_point() +
+  geom_point(data = df_pred_cible, aes(Cohorte, gamma), color = "red", size = 2) +
+  geom_line(data = df_pred, aes(Cohorte, gamma), color = "red") +
+  xlim(min(cohortes), max(ANNEE_CIBLE)) +
+  theme_minimal()
+
+ggplot(resultats_historique, aes(Cohorte, kappa)) +
+  geom_point() +
+  geom_point(data = df_pred_cible, aes(Cohorte, kappa), color = "red", size = 2) +
+  geom_line(data = df_pred, aes(Cohorte, kappa), color = "red") +
+  xlim(min(cohortes), max(ANNEE_CIBLE)) +
+  theme_minimal()
+
+
