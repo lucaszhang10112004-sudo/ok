@@ -1,0 +1,556 @@
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list = ls())
+
+
+library(tidyverse)
+library(tibble)
+library(ggplot2)
+
+
+
+# ==============================================================================
+# 1. PARAMÈTRES GLOBAUX & DONNÉES
+# ==============================================================================
+
+FILE_PATH   <- "France_1x1.txt"
+AGE_MIN     <- 20
+T_SEUIL     <- 50
+ANNEE_DEBUT <- 1900
+ANNEE_FIN   <- 1925  # Jusqu'où on va chercher l'historique
+ANNEE_CIBLE <- c(1940, 1950, 1960, 1970)  # L'année qu'on veut prédire/tester
+PAS_TEMPS   <- 1     # On regarde tous les 2 ans
+
+
+cohortes <- seq(ANNEE_DEBUT, ANNEE_FIN, PAS_TEMPS)
+#cohortes <- c(seq(ANNEE_DEBUT, 1891, PAS_TEMPS),seq(1895, ANNEE_FIN, PAS_TEMPS))
+
+# Vérification du fichier
+if(!file.exists(FILE_PATH)) stop("Fichier introuvable !")
+
+# Importation et nettoyage en un seul bloc fluide
+charger_donnees_cohortes <- function(file_path, age_min = 20) {
+  
+  donnees_globales <- read.table(file_path, header = TRUE, na.strings = ".", skip = 2) %>%
+    mutate(
+      Age = parse_number(as.character(Age)),
+      Year = as.numeric(Year),
+      lx = as.numeric(lx)
+    ) %>%
+    filter(Age >= age_min) %>%
+    group_by(Year) %>%
+    mutate(
+      l_ref = first(lx),
+      qhat_cond = 1 - (lx / l_ref)
+    ) %>%
+    ungroup() %>%
+    filter(!is.na(qhat_cond))
+  
+  return(donnees_globales)
+}
+
+
+
+donnees_globales <- charger_donnees_cohortes("France_1x1.txt")
+
+data_year <- donnees_globales %>% filter(Year == 1900)
+
+
+for (i in seq(cohortes[1],cohortes[length(cohortes)], 1)){
+  donnees_globales[donnees_globales$Year==i,]$qhat_cond <- 1-(donnees_globales[donnees_globales$Year==i,]$lx/donnees_globales[donnees_globales$Year==i,]$lx[1])
+}
+
+donnee_test <- donnees_globales %>% filter(Year==ANNEE_DEBUT)
+Cohorte <- c(cohortes, ANNEE_CIBLE)
+
+# ==========================================
+# 1) q_hat empirique conditionnel depuis lx
+# ==========================================
+make_qhat_cond_from_lx <- function(data_year, S = 20) {
+  lxS <- data_year$lx[data_year$Age == S][1]
+
+  data_year %>%
+    arrange(Age) %>%
+    filter(Age >= S) %>%
+    mutate(qhat_cond = 1 - lx / lxS) %>%
+    select(Age, qhat_cond)
+}
+
+# ==========================================
+# 2) Modèle C uniformisé avec tes fonctions
+# ==========================================
+qcA <- function(t, alpha, beta, gamma, kappa) {
+  t <- as.numeric(t)
+
+  M <- alpha * t
+  idx <- t > T
+
+  if (any(idx)) {
+    t_sup <- t[idx]
+
+    if (abs(gamma) < 1e-8) {
+      M[idx] <- alpha * t_sup + beta * (t_sup - T)
+    } else {
+      M[idx] <- alpha * t_sup +
+        (beta / gamma) * (exp(gamma * (t_sup - T)) - 1)
+    }
+  }
+
+  sqrt2M <- sqrt(2 * M / kappa)
+
+  a1 <- (M - x_c) / sqrt2M
+  a2 <- (M + x_c) / sqrt2M
+
+  q <- 1 - pnorm(a1) + exp(-kappa * x_c) * pnorm(a2)
+  return(q)
+}
+
+modele_C_cond <- function(t, S, alpha, beta, gamma, kappa) {
+  F_t <- qcA(t, alpha, beta, gamma, kappa)
+  F_S <- qcA(S, alpha, beta, gamma, kappa)
+  return((F_t - F_S) / (1 - F_S))
+}
+
+erreur_C <- function(params, data) {
+  a <- params[1]
+  b <- params[2]
+  g <- params[3]
+  k <- params[4]
+
+  if (a > 0 || b > 0 || k > 0) return(1e9)
+
+  pred <- modele_C_cond(data$Age, AGE_MIN, a, b, g, k)
+
+  if (any(is.nan(pred)) || any(is.infinite(pred))) return(1e9)
+
+  sum((pred - data$qhat_cond)^2)
+}
+
+# ==========================================
+# 3) Fit simplifié : essaie jusqu'à seuil
+# ==========================================
+fit_modelC_while <- function(data, seuil = 0.1, max_tries = 10000, seed = 42) {
+  set.seed(seed)
+
+  lower <- c(alpha = -10, beta = -10, gamma = 0.001, kappa = -0.05)
+  upper <- c(alpha =  -1, beta =  -1, gamma = 0.2,   kappa = -0.0001)
+
+  tries <- 0
+
+  while (tries < max_tries) {
+    tries <- tries + 1
+
+    p0 <- c(
+      alpha = runif(1, lower["alpha"], upper["alpha"]),
+      beta  = runif(1, lower["beta"],  upper["beta"]),
+      gamma = runif(1, lower["gamma"], upper["gamma"]),
+      kappa = runif(1, lower["kappa"], upper["kappa"])
+    )
+
+    res <- optim(
+      par    = p0,
+      fn     = erreur_C,
+      data   = data,
+      method = "L-BFGS-B",
+      lower  = lower,
+      upper  = upper
+    )
+
+    if (is.finite(res$value) && res$value < seuil) {
+      res$par <- setNames(res$par, c("alpha", "beta", "gamma", "kappa"))
+      res$tries <- tries
+      return(res)
+    }
+
+    if (tries %% 100 == 0) {
+      message("tries = ", tries, " | current value = ", res$value)
+    }
+  }
+
+  stop("Aucun fit trouvé sous le seuil après ", max_tries, " essais.")
+}
+
+# ==========================================
+# 4) Exemple d'usage
+# ==========================================
+# Constantes globales utilisées par qcA / erreur_C
+AGE_MIN <- 20
+T <- 50
+x_c <- 1000
+
+# Si tu pars d'un tableau lx :
+# donnee_test <- make_qhat_cond_from_lx(data_year, S = AGE_MIN)
+
+fit <- fit_modelC_while(
+  data = donnee_test,
+  seuil = 0.1,
+  max_tries = 10000,
+  seed = 42
+)
+
+fit$par
+fit$value
+fit$tries
+
+plot(donnee_test$Age, donnee_test$qhat_cond, type = "l")
+lines(
+  donnee_test$Age,
+  modele_C_cond(
+    donnee_test$Age, AGE_MIN,
+    fit$par["alpha"], fit$par["beta"], fit$par["gamma"], fit$par["kappa"]
+  ),
+  col = "red",
+  lwd = 2
+)
+
+
+## Code by Mano qui prend un starteur arbitraire
+
+
+x_c <- 1000
+T <- 50
+
+qcA <- function(t, alpha, beta, gamma, kappa) {
+  
+  t <- as.numeric(t)
+
+  # Définition de M(t)
+  M <- alpha * t
+  idx <- t > T
+  
+  if (any(idx)) {
+    t_sup <- t[idx]
+    
+    if (abs(gamma) < 1e-8) {
+      M[idx] <- alpha * t_sup + beta * (t_sup-T)
+    } else {
+      M[idx] <- alpha * t_sup + 
+        (beta / gamma) * (exp(gamma * (t_sup - T)) - 1)
+    }
+  }
+  # Calcul direct de la formule
+  sqrt2M <- sqrt(2 * M/kappa)
+
+  a1 <-  (M - x_c) / sqrt2M
+  a2 <-  (M + x_c) / sqrt2M
+
+  q <- 1 - pnorm(a1) + exp(-kappa * x_c) * pnorm(a2)
+
+  return(q)
+}
+
+
+# Probabilité conditionnelle (Fonction utilisée pour le fit)
+modele_C_cond <- function(t, S, alpha, beta, gamma, kappa) {
+  F_t <- qcA(t, alpha, beta, gamma, kappa)
+  F_S <- qcA(S, alpha, beta, gamma, kappa)
+  return((F_t - F_S) / (1 - F_S))
+}
+
+# Fonction d'erreur (Somme des carrés)
+erreur_C <- function(params, data) {
+  a <- params[1]; b <- params[2]; g <- params[3]; k <- params[4]
+  # Contrainte stricte : pas de paramètres négatifs
+  if(a>0 || b>0 || k>0) return(1e9)
+  pred <- modele_C_cond(data$Age, AGE_MIN, a, b, g, k)
+  return(sum((pred - data$qhat_cond)^2))
+}
+#lorsque l'on veut tester sans passer par le code by gpto
+par <- c(-5.6020379463, -3.0720202439, 0.1328332721, -0.0008514573)
+#------------
+age <- donnees_globales[donnees_globales$Year==ANNEE_DEBUT,]$Age
+
+data_year <- donnees_globales %>% filter(Year == ANNEE_DEBUT)
+res <- optim(
+  par = fit$par,
+  fn  = erreur_C,
+  data = data_year
+)
+
+courbe_ajustee <- modele_C_cond(age, AGE_MIN, res$par[1], res$par[2], res$par[3], res$par[4])
+plot(age,courbe_ajustee)
+lines(age, data_year$qhat_cond, col="red")
+
+
+res$par
+
+# ==============================================================================
+# 3. HISTORIQUE DES PARAMÈTRES 
+# ==============================================================================
+
+resultats_historique <- data.frame(Cohorte = cohortes, alpha = NA, beta = NA, gamma = NA, kappa = NA)
+
+cat("Calibration historique en cours...\n")
+
+for (i in seq_along(cohortes)) {
+  annee <- cohortes[i]
+  data_year <- donnees_globales %>% filter(Year == annee)
+  
+  if(nrow(data_year) > 0) {
+    # Optimisation avec gestion d'erreur
+    try({
+      res <- optim(
+              par = res$par,
+              fn  = erreur_C,
+              data = data_year
+              )
+      #res <- fit_modelC_LS_while(data_year, S_age = 20, x_c = 1000, T = 50,
+                           #seuil = 1, max_tries = 10000, seed = 42) # On passe les données en argument
+      
+      resultats_historique[i, 2:5] <- res$par
+    }, silent = TRUE)
+  }
+}
+
+# ==============================================================================
+# 4. PROJECTION (MÉTHODE SHIMIZU)
+# ==============================================================================
+
+# A. Régression Linéaire sur les paramètres historiques
+#fit_alpha <- lm(alpha ~ Cohorte, data = resultats_historique)
+#fit_beta  <- lm(beta~ Cohorte, data = resultats_historique)
+fit_gamma <- lm(gamma ~ Cohorte, data = resultats_historique)
+#fit_kappa <- lm(kappa ~ Cohorte, data = resultats_historique)
+
+fit_alpha <- lm(log(-alpha) ~ Cohorte, data = resultats_historique)
+fit_beta  <- lm(log(-beta)  ~ Cohorte, data = resultats_historique)
+#fit_gamma <- lm(log(-gamma) ~ Cohorte, data = resultats_historique)
+fit_kappa <- lm(log(-kappa) ~ Cohorte, data = resultats_historique)
+
+#ABIS prédiction des paramétres 
+pred_alpha <- -exp(predict(fit_alpha,
+                           newdata = data.frame(Cohorte = c(cohortes, ANNEE_CIBLE)),
+                           se.fit = FALSE))
+
+pred_beta <- -exp(predict(fit_beta,
+                          newdata = data.frame(Cohorte = c(cohortes, ANNEE_CIBLE)),
+                          se.fit = FALSE))
+
+pred_gamma <- predict(fit_gamma,
+                      newdata = data.frame(Cohorte = c(cohortes, ANNEE_CIBLE)),
+                      se.fit = FALSE)
+
+pred_kappa <- -exp(predict(fit_kappa,
+                           newdata = data.frame(Cohorte = c(cohortes, ANNEE_CIBLE)),
+                           se.fit = FALSE))
+
+# B. Fonction utilitaire pour calculer les bornes (évite la répétition de code)
+calculer_bornes <- function(model_lm, annee_cible, z_score) {
+  pred <- predict(model_lm,
+                  newdata = data.frame(Cohorte = annee_cible),
+                  se.fit = TRUE)
+
+  se_total <- sqrt(pred$se.fit^2 + summary(model_lm)$sigma^2)
+
+  list(
+    valeur = pred$fit,
+    min = pred$fit - z_score * se_total,
+    max = pred$fit + z_score * se_total
+  )
+}
+
+calculer_bornes_exp <- function(model_lm, annee_cible, z_score) {
+  pred <- predict(model_lm,
+                  newdata = data.frame(Cohorte = annee_cible),
+                  se.fit = TRUE)
+
+  se_total <- sqrt(pred$se.fit^2 + summary(model_lm)$sigma^2)
+
+  list(
+    valeur = -exp(pred$fit),
+    min = -exp(pred$fit - z_score * se_total),
+    max = -exp(pred$fit + z_score * se_total)
+  )
+}
+
+calculer_bornes_beta <- function(model_lm_beta, annee_cible, z_score) {
+  pred <- predict(
+    model_lm_beta,
+    newdata = data.frame(Cohorte = annee_cible),
+    se.fit = TRUE
+  )
+
+  se_total <- sqrt(pred$se.fit^2 + summary(model_lm_beta)$sigma^2)
+
+  y_hat <- pred$fit
+  y_min <- y_hat - z_score * se_total
+  y_max <- y_hat + z_score * se_total
+
+  beta_hat <- exp(-y_hat)
+  beta_min <- exp(-y_max)   # inversion (car exp(-y) décroît)
+  beta_max <- exp(-y_min)
+
+  list(
+    valeur = beta_hat,
+    min = beta_min,  # <- vectorisé
+    max = beta_max
+  )
+}
+
+# C. Calcul des bornes pour l'année cible
+z <- qnorm(1 - 0.05/2) # Intervalle à 95%
+
+bornes_alpha <- calculer_bornes_exp(fit_alpha, ANNEE_CIBLE, z)
+bornes_beta  <- calculer_bornes_exp(fit_beta,  ANNEE_CIBLE, z)
+bornes_gamma <- calculer_bornes(fit_gamma, ANNEE_CIBLE, z)
+bornes_kappa <- calculer_bornes_exp(fit_kappa, ANNEE_CIBLE, z)
+
+# On regroupe tout pour l'optimiseur
+limites_inf  <- list(alpha_min=bornes_alpha$min,    beta_min=bornes_beta$min,    gamma_min=bornes_gamma$min, kappa_min=bornes_kappa$min)
+limites_sup  <- list(alpha_min=bornes_alpha$max,    beta_min=bornes_beta$max,    gamma_min=bornes_gamma$max, kappa_min=bornes_kappa$max)
+points_depart <- list(alpha_min=bornes_alpha$valeur,    beta_min=bornes_beta$valeur,    gamma_min=bornes_gamma$valeur, kappa_min=bornes_kappa$valeur)
+
+cat("Bornes calculées pour", ANNEE_CIBLE, ":\n")
+print(data.frame(Param=c("a","b","g","k"), Min=limites_inf, Max=limites_sup))
+
+df_pred <- data.frame(
+  cohortes = c(cohortes, ANNEE_CIBLE),
+  alpha = pred_alpha,
+  beta = pred_beta,
+  gamma = pred_gamma,
+  kappa = pred_kappa
+)
+
+ttt <- c(cohortes, ANNEE_CIBLE)
+
+df_pred_pts <- tail(df_pred, 4)
+
+df_gamma_cible <- df_pred[df_pred$cohortes %in% ANNEE_CIBLE, ]
+
+
+ggplot(resultats_historique, aes(cohortes, alpha)) +
+  geom_point() +
+  geom_point(
+    data = df_gamma_cible,
+    aes(cohortes, alpha),
+    color = "red",
+    size = 2
+  ) +
+  geom_line(data = df_pred, aes(cohortes, alpha), color = "red") +
+  xlim(min(cohortes), max(ANNEE_CIBLE)) +     
+  ylim(min(resultats_historique$alpha), max(df_gamma_cible$alpha)) + 
+  theme_minimal()
+
+"---------------------"
+
+
+ggplot(resultats_historique, aes(cohortes, beta)) +
+  geom_point() +
+  geom_point(
+    data = df_gamma_cible,
+    aes(cohortes, beta),
+    color = "red",
+    size = 2
+  ) +
+  geom_line(data = df_pred, aes(cohortes, beta), color = "red") +
+  xlim(min(cohortes), max(ANNEE_CIBLE)) +     
+  ylim(min(resultats_historique$beta),  max(df_gamma_cible$beta)) + 
+  theme_minimal()
+
+"---------------------"
+
+
+ggplot(resultats_historique, aes(cohortes, gamma)) +
+  geom_point() +
+  geom_point(
+    data = df_gamma_cible,
+    aes(cohortes, gamma),
+    color = "red",
+    size = 2
+  ) +
+  geom_line(data = df_pred, aes(cohortes, gamma), color = "red") +
+  xlim(min(cohortes), max(ANNEE_CIBLE)) +     
+  ylim(min(resultats_historique$gamma), max(df_gamma_cible$gamma)) + 
+  theme_minimal()
+
+"---------------------"
+
+ggplot(resultats_historique, aes(cohortes, kappa)) +
+  geom_point() +
+  geom_point(
+    data = df_gamma_cible,
+    aes(cohortes, kappa),
+    color = "red",
+    size = 2,
+  ) +
+  geom_line(data = df_pred, aes(cohortes, kappa), color = "red") +
+  xlim(min(cohortes), max(ANNEE_CIBLE)) +     
+  ylim(min(resultats_historique$kappa), max(df_gamma_cible$kappa)*0.1) + 
+  theme_minimal()
+
+max(resultats_historique$gamma)
+
+
+
+limites_inf  <- list(alpha_min=bornes_alpha$min,    beta_min=bornes_beta$min,    gamma_min=bornes_gamma$min, kappa_min=bornes_kappa$min)
+limites_sup  <- list(alpha_min=bornes_alpha$max,    beta_min=bornes_beta$max,    gamma_min=bornes_gamma$max, kappa_min=bornes_kappa$max)
+points_depart <- list(alpha_min=bornes_alpha$valeur,    beta_min=bornes_beta$valeur,    gamma_min=bornes_gamma$valeur, kappa_min=bornes_kappa$valeur)
+
+estimer_parametres_par_cohorte <- function(
+  donnees_globales,
+  annees_cibles,
+  points_depart,   # list(alpha_min=..., beta_min=..., gamma_min=...)
+  limites_inf,     # list(alpha_min=..., beta_min=..., gamma_min=...)
+  limites_sup,     # list(alpha_min=..., beta_min=..., gamma_min=...)
+  erreur_C
+) {
+  stopifnot(
+    length(points_depart$alpha_min) == length(annees_cibles),
+    length(points_depart$beta_min)  == length(annees_cibles),
+    length(points_depart$gamma_min) == length(annees_cibles),
+    length(points_depart$kappa_min) == length(annees_cibles)
+  )
+
+  res_list <- vector("list", length(annees_cibles))
+  names(res_list) <- as.character(annees_cibles)
+
+  for (i in seq_along(annees_cibles)) {
+    annee <- annees_cibles[i]
+
+    donnees_cible <- donnees_globales %>% filter(Year == annee)
+
+    par_i   <- c(points_depart$alpha_min[i], points_depart$beta_min[i], points_depart$gamma_min[i], points_depart$kappa_min[i])
+    lower_i <- c(limites_inf$alpha_min[i],   limites_inf$beta_min[i],   limites_inf$gamma_min[i], limites_inf$kappa_min[i])
+    upper_i <- c(limites_sup$alpha_min[i],   limites_sup$beta_min[i],   limites_sup$gamma_min[i], limites_sup$kappa_min[i])
+
+    res <- optim(
+      par    = par_i,
+      fn     = erreur_C,
+      data   = donnees_cible,
+      method = "L-BFGS-B",
+      lower  = lower_i,
+      upper  = upper_i
+    )
+
+    res_list[[as.character(annee)]] <- list(
+      Year = annee,
+      par = setNames(res$par, c("alpha", "beta", "gamma","kappa")),
+      value = res$value
+    )
+  }
+
+  res_list
+}
+res_list <- estimer_parametres_par_cohorte(
+  donnees_globales,
+  ANNEE_CIBLE,
+  points_depart,   
+  limites_inf,     
+  limites_sup,     
+  erreur_C
+) 
+
+
+age <- donnees_globales[donnees_globales$Year==ANNEE_FIN,]$Age
+
+plot(age, modele_C_cond(age,20, res_list$`1940`$par[1], res_list$`1940`$par[2], res_list$`1940`$par[3], res_list$`1940`$par[4]), type="l", lty=2, col="blue", lwd=2,
+     main = "(c) Projection model C pour c=1940", xlab="Age", ylab="qc(t)")
+
+plot(age, modele_C_cond(age,20, res_list$`1950`$par[1], res_list$`1950`$par[2], res_list$`1950`$par[3], res_list$`1950`$par[4]), type="l", lty=2, col="blue", lwd=2,
+     main = "(c) Projection model C pour c=1950", xlab="Age", ylab="qc(t)")
+
+plot(age, modele_C_cond(age,20, res_list$`1960`$par[1], res_list$`1960`$par[2], res_list$`1960`$par[3], res_list$`1960`$par[4]), type="l", lty=2, col="blue", lwd=2,
+     main = "(c) Projection model C pour c=1960", xlab="Age", ylab="qc(t)")
+
+plot(age, modele_C_cond(age,20, res_list$`1970`$par[1], res_list$`1970`$par[2], res_list$`1970`$par[3], res_list$`1970`$par[4]), type="l", lty=2, col="blue", lwd=2,
+     main = "(c) Projection model C pour c=1970", xlab="Age", ylab="qc(t)")
