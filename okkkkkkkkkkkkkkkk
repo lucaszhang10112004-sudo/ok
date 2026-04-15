@@ -353,3 +353,48 @@ reconstruire_qc_LC_cohorte <- function(cohorte, rates_fc, ages, S = 20) {
   )
 }
 
+
+# =========================
+# Comparaison cohorte 1940
+# =========================
+
+cohorte_test <- 1940
+
+# Lee-Carter sur la diagonale cohorte
+qc_lc_1940 <- reconstruire_qc_LC_cohorte(
+  cohorte = cohorte_test,
+  rates_fc = rates_fc,
+  ages = ages_fit,
+  S = 20
+)
+
+# ID-SEM cohorte 1940
+qc_idsem_1940 <- modele_C_cond(
+  t = qc_lc_1940$Age,
+  S = 20,
+  alpha = res_list$`1940`$par[1],
+  beta  = res_list$`1940`$par[2],
+  gamma = res_list$`1940`$par[3],
+  kappa = res_list$`1940`$par[4]
+)
+
+plot(qc_lc_1940$Age, qc_lc_1940$qc,
+     type = "l",
+     col = "red",
+     lwd = 2,
+     xlab = "Age",
+     ylab = expression(q[c](t~"|"~20)),
+     main = "Comparaison Lee-Carter vs ID-SEM - cohorte 1940",
+     ylim = c(0, 1))
+
+lines(qc_lc_1940$Age, qc_idsem_1940,
+      col = "blue",
+      lwd = 2,
+      lty = 2)
+
+legend("bottomright",
+       legend = c("Lee-Carter reconstruit", "ID-SEM"),
+       col = c("red", "blue"),
+       lty = c(1, 2),
+       lwd = 2,
+       bty = "n")
