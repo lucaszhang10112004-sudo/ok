@@ -1,1 +1,97 @@
+F_vers_mx <- function(Fx) {
+  Fx <- as.numeric(Fx)
 
+  qx <- rep(NA_real_, length(Fx))
+  qx[1] <- Fx[1]
+
+  for (j in 2:length(Fx)) {
+    denom <- 1 - Fx[j - 1]
+    if (is.finite(denom) && denom > 1e-10) {
+      qx[j] <- (Fx[j] - Fx[j - 1]) / denom
+    }
+  }
+
+  qx[qx <= 0] <- NA
+  qx[qx >= 1] <- NA
+
+  mx <- -log(1 - qx)
+  return(mx)
+}
+
+courbe_idsem_cohorte <- function(cohorte, res_list, ages_min = 20, ages_max = 95) {
+  ages <- ages_min:ages_max
+
+  pars <- res_list[[as.character(cohorte)]]$par
+
+  Fx <- modele_C_cond(
+    t = ages,
+    S = 20,
+    alpha = pars[1],
+    beta  = pars[2],
+    gamma = pars[3],
+    kappa = pars[4]
+  )
+
+  mx <- F_vers_mx(Fx)
+
+  data.frame(
+    Cohorte = cohorte,
+    Age = ages,
+    mx_idsem = mx
+  )
+}
+
+courbe_lc_cohorte <- function(cohorte, rates_fc, ages_min = 20, ages_max = 95) {
+  ages <- ages_min:ages_max
+  years_avail <- as.numeric(colnames(rates_fc))
+
+  years_coh <- cohorte + ages
+  ok <- years_coh %in% years_avail
+
+  out <- data.frame(
+    Cohorte = cohorte,
+    Age = ages[ok],
+    Year = years_coh[ok],
+    mx_lc = NA_real_
+  )
+
+  for (i in seq_len(nrow(out))) {
+    a <- out$Age[i]
+    y <- out$Year[i]
+    out$mx_lc[i] <- rates_fc[as.character(a), as.character(y)]
+  }
+
+  out
+}
+
+comparaison_cohorte <- function(cohorte, res_list, rates_fc, ages_min = 20, ages_max = 95) {
+  id_df <- courbe_idsem_cohorte(cohorte, res_list, ages_min, ages_max)
+  lc_df <- courbe_lc_cohorte(cohorte, rates_fc, ages_min, ages_max)
+
+  full_join(id_df, lc_df, by = c("Cohorte", "Age"))
+}
+
+cohortes_a_comparer <- c(1940, 1950, 1960, 1970)
+
+par(mfrow = c(2, 2))
+
+for (c0 in cohortes_a_comparer) {
+  df_comp <- comparaison_cohorte(c0, res_list, rates_fc)
+
+  plot(df_comp$Age, log(df_comp$mx_lc),
+       type = "l", lwd = 2, col = "red",
+       xlab = "Age", ylab = "log(m_x)",
+       main = paste("Cohorte", c0))
+
+  lines(df_comp$Age, log(df_comp$mx_idsem),
+        lwd = 2, col = "blue", lty = 2)
+
+  legend("topleft",
+         legend = c("Lee-Carter", "ID-SEM"),
+         col = c("red", "blue"),
+         lty = c(1, 2),
+         lwd = 2,
+         bty = "n")
+}
+
+par(mfrow = c(1, 1))
