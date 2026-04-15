@@ -264,7 +264,51 @@ legend("bottomright",
 
 
 
+cohortes_test <- c(1940, 1950, 1960, 1970)
 
+par(mfrow = c(2, 2))
+
+for (c0 in cohortes_test) {
+  
+  qc_lc <- reconstruire_qc_LC_cohorte(
+    cohorte = c0,
+    rates_fc = rates_fc,
+    ages = ages_fit,
+    S = 20
+  )
+  
+  qc_id <- modele_C_cond(
+    t = qc_lc$Age,
+    S = 20,
+    alpha = res_list[[as.character(c0)]]$par[1],
+    beta  = res_list[[as.character(c0)]]$par[2],
+    gamma = res_list[[as.character(c0)]]$par[3],
+    kappa = res_list[[as.character(c0)]]$par[4]
+  )
+  
+  plot(qc_lc$Age, qc_lc$qc,
+       type = "l",
+       col = "red",
+       lwd = 2,
+       xlab = "Age",
+       ylab = expression(q[c](t~"|"~20)),
+       main = paste("Cohorte", c0),
+       ylim = c(0, 1))
+  
+  lines(qc_lc$Age, qc_id,
+        col = "blue",
+        lwd = 2,
+        lty = 2)
+  
+  legend("bottomright",
+         legend = c("Lee-Carter", "ID-SEM"),
+         col = c("red", "blue"),
+         lty = c(1, 2),
+         lwd = 2,
+         bty = "n")
+}
+
+par(mfrow = c(1, 1))
 
 
 
