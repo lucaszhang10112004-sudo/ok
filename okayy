@@ -218,6 +218,107 @@ tail(comp_1940)
 
 
 
+# ============================================================
+# COMPARAISON LEE-CARTER vs IG-SEM (cohortes 1930–1932)
+# ============================================================
 
+# --- 1. mx -> qx -> qc(t|20)
+mx_to_qc <- function(mx_vec, ages, S = 20) {
+  
+  qx <- 1 - exp(-mx_vec)
+  qx[qx < 0 | qx > 1] <- NA
+  
+  idx <- ages >= S
+  ages_sub <- ages[idx]
+  qx_sub <- qx[idx]
+  
+  qc <- numeric(length(qx_sub))
+  qc[1] <- 0
+  
+  for (j in 2:length(qx_sub)) {
+    qc[j] <- 1 - prod(1 - qx_sub[1:(j - 1)])
+  }
+  
+  return(data.frame(Age = ages_sub, qc = qc))
+}
+
+
+# --- 2. Lee-Carter par cohorte (diagonale)
+qc_LC_cohorte <- function(cohorte, rates_fc, ages) {
+  
+  years <- as.numeric(colnames(rates_fc))
+  ages_sub <- ages[ages >= 20]
+  years_cohort <- cohorte + ages_sub
+  
+  ok <- years_cohort %in% years
+  
+  ages_ok <- ages_sub[ok]
+  years_ok <- years_cohort[ok]
+  
+  mx_vec <- sapply(seq_along(ages_ok), function(i) {
+    rates_fc[as.character(ages_ok[i]), as.character(years_ok[i])]
+  })
+  
+  mx_to_qc(mx_vec, ages_ok, S = 20)
+}
+
+
+# --- 3. IG-SEM par cohorte
+qc_IGSEM_cohorte <- function(cohorte, ages, res_list, xc = 1000) {
+  
+  pars <- res_list[[as.character(cohorte)]]$par
+  
+  qc <- modele_C_cond(
+    ages,
+    20,
+    pars[1],
+    pars[2],
+    pars[3],
+    xc
+  )
+  
+  data.frame(Age = ages, qc = qc)
+}
+
+
+# --- 4. Comparaison graphique
+compare_cohorte <- function(cohorte, rates_fc, ages_fit, res_list, xc = 1000) {
+  
+  df_lc <- qc_LC_cohorte(cohorte, rates_fc, ages_fit)
+  
+  df_ig <- qc_IGSEM_cohorte(
+    cohorte,
+    df_lc$Age,
+    res_list,
+    xc
+  )
+  
+  plot(df_lc$Age, df_lc$qc,
+       type = "l",
+       col = "red",
+       lwd = 2,
+       xlab = "Age",
+       ylab = expression(q[c](t~"|"~20)),
+       main = paste("Comparaison LC vs IG-SEM - cohorte", cohorte),
+       ylim = c(0,1))
+  
+  lines(df_ig$Age, df_ig$qc,
+        col = "blue",
+        lwd = 2,
+        lty = 2)
+  
+  legend("bottomright",
+         legend = c("Lee-Carter", "IG-SEM"),
+         col = c("red", "blue"),
+         lty = c(1,2),
+         lwd = 2,
+         bty = "n")
+}
+
+
+# --- 5. LANCEMENT (cohortes test HMD)
+compare_cohorte(1930, rates_fc, ages_fit, res_list)
+compare_cohorte(1931, rates_fc, ages_fit, res_list)
+compare_cohorte(1932, rates_fc, ages_fit, res_list)
 
 
