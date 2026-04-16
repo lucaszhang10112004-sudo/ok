@@ -1,0 +1,110 @@
+reconstruire_qc_LC <- function(mx_vec, ages, S = 20) {
+  qx <- 1 - exp(-mx_vec)
+  qx[qx < 0 | qx > 1] <- NA
+
+  idx <- ages >= S
+  ages_sub <- ages[idx]
+  qx_sub <- qx[idx]
+
+  qc <- numeric(length(qx_sub))
+  qc[1] <- 0
+
+  for (j in 2:length(qx_sub)) {
+    qc[j] <- 1 - prod(1 - qx_sub[1:(j - 1)])
+  }
+
+  data.frame(
+    Age = ages_sub,
+    qc = qc
+  )
+}years_proj <- 2000:2023
+mx_00_23_pred <- rates_fc[, as.character(years_proj)]
+
+# moyenne Lee-Carter fixe par âge
+mx_lc_fixe <- rowMeans(mx_00_23_pred, na.rm = TRUE)
+
+qc_lc_fixe <- reconstruire_qc_LC(mx_lc_fixe, ages_fit, S = 20)
+
+
+
+
+
+
+
+
+cohortes_test <- c(1940, 1950, 1960, 1970)
+
+par(mfrow = c(2, 2))
+
+for (c0 in cohortes_test) {
+
+  qc_igsem <- modele_C_cond(
+    t = qc_lc_fixe$Age,
+    S = 20,
+    alpha = res_list[[as.character(c0)]]$par[1],
+    beta  = res_list[[as.character(c0)]]$par[2],
+    gamma = res_list[[as.character(c0)]]$par[3],
+    kappa = res_list[[as.character(c0)]]$par[4]
+  )
+
+  plot(qc_lc_fixe$Age, qc_lc_fixe$qc,
+       type = "l",
+       col = "red",
+       lwd = 2,
+       xlab = "Age",
+       ylab = expression(q[c](t~"|"~20)),
+       main = paste("Lee-Carter fixe vs IG-SEM", c0),
+       ylim = c(0, 1))
+
+  lines(qc_lc_fixe$Age, qc_igsem,
+        col = "blue",
+        lwd = 2,
+        lty = 2)
+
+  legend("bottomright",
+         legend = c("Lee-Carter fixe", paste("IG-SEM", c0)),
+         col = c("red", "blue"),
+         lty = c(1, 2),
+         lwd = 2,
+         bty = "n")
+}
+
+par(mfrow = c(1, 1))
+
+
+plot(qc_lc_fixe$Age, qc_lc_fixe$qc,
+     type = "l",
+     col = "red",
+     lwd = 3,
+     xlab = "Age",
+     ylab = expression(q[c](t~"|"~20)),
+     main = "Lee-Carter fixe vs projections IG-SEM",
+     ylim = c(0, 1))
+
+cols <- c("blue", "darkgreen", "purple", "orange")
+cohortes_test <- c(1940, 1950, 1960, 1970)
+
+for (i in seq_along(cohortes_test)) {
+  c0 <- cohortes_test[i]
+
+  qc_igsem <- modele_C_cond(
+    t = qc_lc_fixe$Age,
+    S = 20,
+    alpha = res_list[[as.character(c0)]]$par[1],
+    beta  = res_list[[as.character(c0)]]$par[2],
+    gamma = res_list[[as.character(c0)]]$par[3],
+    kappa = res_list[[as.character(c0)]]$par[4]
+  )
+
+  lines(qc_lc_fixe$Age, qc_igsem,
+        col = cols[i],
+        lwd = 2,
+        lty = 2)
+}
+
+legend("bottomright",
+       legend = c("Lee-Carter fixe", "IG-SEM 1940", "IG-SEM 1950", "IG-SEM 1960", "IG-SEM 1970"),
+       col = c("red", cols),
+       lty = c(1, 2, 2, 2, 2),
+       lwd = c(3, 2, 2, 2, 2),
+       bty = "n")
