@@ -200,10 +200,124 @@ comparer_cohorte_LC_IGSEM <- function(cohorte, rates_fc, ages_fit, res_list) {
 
 
 
+
+
 comparer_cohorte_LC_IGSEM(1940, rates_fc, ages_fit, res_list)
 comparer_cohorte_LC_IGSEM(1950, rates_fc, ages_fit, res_list)
 comparer_cohorte_LC_IGSEM(1960, rates_fc, ages_fit, res_list)
 comparer_cohorte_LC_IGSEM(1970, rates_fc, ages_fit, res_list)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+age_full <- 20:115
+
+qc_igsem_full_1940 <- modele_IGSEM_cond(
+  t = age_full,
+  S = 20,
+  param1 = res_list_igsem$`1940`$par[1],
+  param2 = res_list_igsem$`1940`$par[2],
+  param3 = res_list_igsem$`1940`$par[3]
+  # + autres paramètres si besoin
+)
+
+plot(age_full, qc_igsem_full_1940, type = "l", col = "blue", lwd = 2)
+
+
+
+reconstruire_qc_lc_cohorte <- function(cohorte, rates_fc, ages, S = 20) {
+  years_fc <- as.numeric(colnames(rates_fc))
+  
+  ages_sub <- ages[ages >= S]
+  years_coh <- cohorte + ages_sub
+  ok <- years_coh %in% years_fc
+  
+  ages_ok <- ages_sub[ok]
+  years_ok <- years_coh[ok]
+  
+  mx_vec <- sapply(seq_along(ages_ok), function(i) {
+    rates_fc[as.character(ages_ok[i]), as.character(years_ok[i])]
+  })
+  
+  qx <- 1 - exp(-mx_vec)
+  qx[qx < 0 | qx > 1] <- NA
+  
+  qc <- numeric(length(qx))
+  qc[1] <- 0
+  
+  for (j in 2:length(qx)) {
+    qc[j] <- 1 - prod(1 - qx[1:(j - 1)])
+  }
+  
+  data.frame(
+    Cohorte = cohorte,
+    Age = ages_ok,
+    Year = years_ok,
+    qc_lc = qc
+  )
+}
+
+
+
+comparer_cohorte_LC_IGSEM <- function(cohorte, rates_fc, ages_fit, res_list_igsem) {
+  
+  # Lee-Carter
+  df_lc <- reconstruire_qc_lc_cohorte(
+    cohorte = cohorte,
+    rates_fc = rates_fc,
+    ages = ages_fit,
+    S = 20
+  )
+  
+  # IG-SEM complet, inchangé
+  age_full <- 20:115
+  
+  qc_igsem_full <- modele_IGSEM_cond(
+    t = age_full,
+    S = 20,
+    param1 = res_list_igsem[[as.character(cohorte)]]$par[1],
+    param2 = res_list_igsem[[as.character(cohorte)]]$par[2],
+    param3 = res_list_igsem[[as.character(cohorte)]]$par[3]
+    # + autres paramètres si besoin
+  )
+  
+  df_igsem <- data.frame(
+    Age = age_full,
+    qc_igsem = qc_igsem_full
+  )
+  
+  # on garde seulement les âges disponibles pour Lee-Carter
+  df_comp <- merge(df_lc, df_igsem, by = "Age")
+  
+  plot(df_comp$Age, df_comp$qc_lc,
+       type = "l", col = "red", lwd = 2,
+       xlab = "Age", ylab = expression(q[c](t~"|"~20)),
+       main = paste("Comparaison Lee-Carter / IG-SEM - cohorte", cohorte),
+       ylim = c(0, 1))
+  
+  lines(df_comp$Age, df_comp$qc_igsem,
+        col = "blue", lwd = 2, lty = 2)
+  
+  legend("bottomright",
+         legend = c("Lee-Carter", "IG-SEM"),
+         col = c("red", "blue"),
+         lty = c(1, 2),
+         lwd = 2,
+         bty = "n")
+}
+
+
+
 
 
 
