@@ -1,0 +1,223 @@
+# ============================================================
+# A. MATRICE COMPLETE DES TAUX mx LEE-CARTER (1950-2023)
+# ============================================================
+
+# composantes Lee-Carter ajustées
+ax_lc <- as.numeric(fit_leec$ax)
+bx_lc <- as.numeric(fit_leec$bx)
+kt_fit <- as.numeric(fit_leec$kt)
+kt_proj <- as.numeric(fc_leec$kt.f$mean)
+
+# années
+years_fit_lc <- years_fit
+years_proj_lc <- seq(max(years_fit) + 1, by = 1, length.out = length(kt_proj))
+years_all_lc <- c(years_fit_lc, years_proj_lc)
+
+# k_t complet
+kt_all_lc <- c(kt_fit, kt_proj)
+
+# matrice log(mx) = ax + bx * kt
+log_mx_lc_all <- outer(ax_lc, kt_all_lc, function(a, k) a + bx_lc * 0 + k * 0)
+
+for (j in seq_along(kt_all_lc)) {
+  log_mx_lc_all[, j] <- ax_lc + bx_lc * kt_all_lc[j]
+}
+
+mx_lc_all <- exp(log_mx_lc_all)
+
+rownames(mx_lc_all) <- ages_fit
+colnames(mx_lc_all) <- years_all_lc
+
+
+
+# ============================================================
+# B. OUTILS DE TRANSFORMATION
+# ============================================================
+
+# 1) mx -> qx
+mx_vers_qx <- function(mx_vec) {
+  qx <- 1 - exp(-mx_vec)
+  qx[qx < 0 | qx > 1] <- NA
+  return(qx)
+}
+
+# 2) qx -> q_c(t|S)
+qx_vers_qc <- function(qx_vec, ages_vec, S = 20) {
+  idx <- ages_vec >= S
+  
+  ages_sub <- ages_vec[idx]
+  qx_sub   <- qx_vec[idx]
+  
+  qc <- numeric(length(qx_sub))
+  qc[1] <- 0
+  
+  for (j in 2:length(qx_sub)) {
+    qc[j] <- 1 - prod(1 - qx_sub[1:(j - 1)], na.rm = FALSE)
+  }
+  
+  data.frame(
+    Age = ages_sub,
+    qc = qc
+
+
+
+  )
+}
+
+
+# ============================================================
+# C. COURBE LEE-CARTER PAR COHORTE
+# ============================================================
+
+reconstruire_qc_LC_cohorte <- function(cohorte, mx_matrix, ages, S = 20) {
+  
+  years_available <- as.numeric(colnames(mx_matrix))
+  ages_sub <- ages[ages >= S]
+  years_cohort <- cohorte + ages_sub
+  
+  ok <- years_cohort %in% years_available
+  
+  ages_ok  <- ages_sub[ok]
+  years_ok <- years_cohort[ok]
+  
+  mx_vec <- sapply(seq_along(ages_ok), function(i) {
+    mx_matrix[as.character(ages_ok[i]), as.character(years_ok[i])]
+  })
+  
+  qx_vec <- mx_vers_qx(mx_vec)
+  qc_df  <- qx_vers_qc(qx_vec, ages_ok, S = S)
+  
+  qc_df$Year <- years_ok
+  qc_df$mx_lc <- mx_vec
+  qc_df$qx_lc <- qx_vec
+  qc_df$Cohorte <- cohorte
+  
+  qc_df
+}
+
+
+
+
+
+# ============================================================
+# D. COURBE IG-SEM PAR COHORTE
+# ============================================================
+
+reconstruire_qc_IGSEM_cohorte <- function(cohorte, ages_utiles, res_list, xc = 1000, S = 20) {
+  
+  pars <- res_list[[as.character(cohorte)]]$par
+  
+  qc_igsem <- modele_C_cond(
+    t = ages_utiles,
+    S = S,
+    alpha = pars[1],
+    beta  = pars[2],
+    gamma = pars[3],
+    xc    = xc
+  )
+  
+  data.frame(
+    Cohorte = cohorte,
+    Age = ages_utiles,
+    qc_igsem = as.numeric(qc_igsem)
+  )
+}
+
+
+
+
+
+
+
+
+# ============================================================
+# E. TABLE DE COMPARAISON LEE-CARTER / IG-SEM
+# ============================================================
+
+extraire_comparaison_LC_IGSEM <- function(cohorte, mx_matrix, ages_fit, res_list, xc = 1000, S = 20) {
+  
+  df_lc <- reconstruire_qc_LC_cohorte(
+    cohorte = cohorte,
+    mx_matrix = mx_matrix,
+    ages = ages_fit,
+    S = S
+  )
+  
+  df_ig <- reconstruire_qc_IGSEM_cohorte(
+    cohorte = cohorte,
+    ages_utiles = df_lc$Age,
+    res_list = res_list,
+    xc = xc,
+    S = S
+  )
+  
+  merge(df_lc, df_ig, by = c("Cohorte", "Age"))
+}
+
+
+
+
+
+# ============================================================
+# F. GRAPHE DE COMPARAISON POUR UNE COHORTE
+# ============================================================
+
+comparer_cohorte_LC_IGSEM <- function(cohorte, mx_matrix, ages_fit, res_list, xc = 1000, S = 20) {
+  
+  df_comp <- extraire_comparaison_LC_IGSEM(
+    cohorte = cohorte,
+    mx_matrix = mx_matrix,
+    ages_fit = ages_fit,
+    res_list = res_list,
+    xc = xc,
+    S = S
+  )
+  
+  plot(df_comp$Age, df_comp$qc,
+       type = "l",
+       col = "red",
+       lwd = 2,
+       xlab = "Age",
+       ylab = expression(q[c](t~"|"~20)),
+       main = paste("Comparaison Lee-Carter / IG-SEM - cohorte", cohorte),
+       ylim = c(0, 1))
+  
+  lines(df_comp$Age, df_comp$qc_igsem,
+        col = "blue",
+        lwd = 2,
+        lty = 2)
+  
+  legend("bottomright",
+         legend = c("Lee-Carter reconstruit", "IG-SEM"),
+         col = c("red", "blue"),
+         lty = c(1, 2),
+         lwd = 2,
+         bty = "n")
+}
+
+
+
+
+
+
+
+# ============================================================
+# G. LANCEMENT DES COMPARAISONS
+# ============================================================
+
+comparer_cohorte_LC_IGSEM(1940, mx_lc_all, ages_fit, res_list, xc = 1000, S = 20)
+comparer_cohorte_LC_IGSEM(1950, mx_lc_all, ages_fit, res_list, xc = 1000, S = 20)
+comparer_cohorte_LC_IGSEM(1960, mx_lc_all, ages_fit, res_list, xc = 1000, S = 20)
+comparer_cohorte_LC_IGSEM(1970, mx_lc_all, ages_fit, res_list, xc = 1000, S = 20)
+
+
+comp_1940 <- extraire_comparaison_LC_IGSEM(1940, mx_lc_all, ages_fit, res_list, xc = 1000, S = 20)
+
+head(comp_1940)
+tail(comp_1940)
+
+
+
+
+
+
