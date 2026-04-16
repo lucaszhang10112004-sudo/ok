@@ -700,17 +700,17 @@ legend("topright",
        lty = c(1, 2),
        lwd = 2,
        bty = "n")
-
-
-
 # ============================================================
-# COMPARAISON : courbe empirique depuis mx vs ID-SEM inchangé
+# COMPARAISON SUR 20–120 (même domaine pour les deux courbes)
 # ============================================================
 
-courbe_empirique_depuis_mx_cohorte <- function(cohorte, rates_fc, ages, S = 20) {
+courbe_empirique_20_120 <- function(cohorte, rates_fc, ages_full = 20:120, S = 20) {
   
   years_dispo <- as.numeric(colnames(rates_fc))
-  ages_sub <- ages[ages >= S]
+  
+  qc_full <- rep(NA, length(ages_full))
+  
+  ages_sub <- ages_full[ages_full >= S]
   years_cohorte <- cohorte + ages_sub
   
   ok <- years_cohorte %in% years_dispo
@@ -718,41 +718,43 @@ courbe_empirique_depuis_mx_cohorte <- function(cohorte, rates_fc, ages, S = 20) 
   ages_ok <- ages_sub[ok]
   years_ok <- years_cohorte[ok]
   
-  mx_vec <- sapply(seq_along(ages_ok), function(i) {
-    rates_fc[as.character(ages_ok[i]), as.character(years_ok[i])]
-  })
-  
-  # mx -> qx
-  qx_vec <- 1 - exp(-mx_vec)
-  qx_vec[qx_vec < 0 | qx_vec > 1] <- NA_real_
-  
-  # qx -> qc(t|20)
-  qc_vec <- numeric(length(qx_vec))
-  qc_vec[1] <- 0
-  
-  for (j in 2:length(qx_vec)) {
-    qc_vec[j] <- 1 - prod(1 - qx_vec[1:(j - 1)])
+  if (length(ages_ok) > 0) {
+    
+    mx_vec <- sapply(seq_along(ages_ok), function(i) {
+      rates_fc[as.character(ages_ok[i]), as.character(years_ok[i])]
+    })
+    
+    qx_vec <- 1 - exp(-mx_vec)
+    qx_vec[qx_vec < 0 | qx_vec > 1] <- NA
+    
+    qc_vec <- numeric(length(qx_vec))
+    qc_vec[1] <- 0
+    
+    for (j in 2:length(qx_vec)) {
+      qc_vec[j] <- 1 - prod(1 - qx_vec[1:(j - 1)])
+    }
+    
+    # on place dans le vecteur complet
+    idx <- match(ages_ok, ages_full)
+    qc_full[idx] <- qc_vec
   }
   
   data.frame(
-    Age = ages_ok,
-    qc_emp = qc_vec
+    Age = ages_full,
+    qc_emp = qc_full
   )
 }
 
-comparer_empirique_vs_idsem <- function(cohorte, rates_fc, ages_fit, res_list) {
+comparer_20_120 <- function(cohorte, rates_fc, res_list) {
   
-  # courbe empirique reconstruite depuis mx
-  df_emp <- courbe_empirique_depuis_mx_cohorte(
-    cohorte = cohorte,
-    rates_fc = rates_fc,
-    ages = ages_fit,
-    S = 20
-  )
+  ages_full <- 20:120
   
-  # courbe ID-SEM EXACTEMENT comme dans ton code
+  # empirique
+  df_emp <- courbe_empirique_20_120(cohorte, rates_fc, ages_full)
+  
+  # ID-SEM (INCHANGÉ)
   qc_idsem <- modele_C_cond(
-    df_emp$Age,
+    ages_full,
     20,
     res_list[[as.character(cohorte)]]$par[1],
     res_list[[as.character(cohorte)]]$par[2],
@@ -760,31 +762,33 @@ comparer_empirique_vs_idsem <- function(cohorte, rates_fc, ages_fit, res_list) {
     res_list[[as.character(cohorte)]]$par[4]
   )
   
-  plot(df_emp$Age, df_emp$qc_emp,
+  plot(ages_full, qc_idsem,
        type = "l",
-       col = "black",
+       col = "blue",
        lwd = 2,
+       lty = 2,
        xlab = "Age",
        ylab = expression(q[c](t~"|"~20)),
-       main = paste("Courbe empirique vs ID-SEM - cohorte", cohorte),
+       main = paste("Empirique vs ID-SEM - cohorte", cohorte),
+       xlim = c(20, 120),
        ylim = c(0, 1))
   
-  lines(df_emp$Age, qc_idsem,
-        col = "blue",
-        lwd = 2,
-        lty = 2)
+  lines(df_emp$Age, df_emp$qc_emp,
+        col = "black",
+        lwd = 2)
   
   legend("bottomright",
-         legend = c("Empirique depuis mx", "ID-SEM"),
-         col = c("black", "blue"),
-         lty = c(1, 2),
+         legend = c("ID-SEM", "Empirique depuis mx"),
+         col = c("blue", "black"),
+         lty = c(2,1),
          lwd = 2,
          bty = "n")
 }
 
-comparer_empirique_vs_idsem(1940, rates_fc, ages_fit, res_list)
-comparer_empirique_vs_idsem(1950, rates_fc, ages_fit, res_list)
-comparer_empirique_vs_idsem(1960, rates_fc, ages_fit, res_list)
-comparer_empirique_vs_idsem(1970, rates_fc, ages_fit, res_list)
+# LANCEMENT
+comparer_20_120(1940, rates_fc, res_list)
+comparer_20_120(1950, rates_fc, res_list)
+comparer_20_120(1960, rates_fc, res_list)
+comparer_20_120(1970, rates_fc, res_list)
 )
 
