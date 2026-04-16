@@ -735,3 +735,90 @@ comparer_cohorte_LC_IGSEM(1960, rates_fc, ages_fit, res_list, xc = 1000)
 comparer_cohorte_LC_IGSEM(1970, rates_fc, ages_fit, res_list, xc = 1000)
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+reconstruire_qc_LC <- function(mx_vec, ages, S = 20) {
+
+  
+  qx <- 1 - exp(-mx_vec)
+
+  
+  qx[qx < 0 | qx > 1] <- NA
+
+  
+  idx <- ages >= S
+  ages_sub <- ages[idx]
+  qx_sub <- qx[idx]
+
+  
+  qc <- numeric(length(qx_sub))
+  qc[1] <- 0
+
+  for (j in 2:length(qx_sub)) {
+    qc[j] <- 1 - prod(1 - qx_sub[1:(j - 1)])
+  }
+
+  return(data.frame(
+    Age = ages_sub,
+    qc = qc
+  ))
+}
+
+
+annee_test <- "2000"  
+
+mx_lc <- rates_fc[, annee_test]
+
+
+qc_lc <- reconstruire_qc_LC(mx_lc, ages_fit, S = 20)
+
+age_idsem <- qc_lc$Age
+
+qc_idsem <- modele_C_cond(
+  age_idsem,
+  20,
+  res_list$`1940`$par[1],
+  res_list$`1940`$par[2],
+  res_list$`1940`$par[3],
+  res_list$`1940`$par[4]
+)
+
+
+plot(qc_lc$Age, qc_lc$qc,
+     type = "l",
+     col = "red",
+     lwd = 2,
+     xlab = "Age",
+     ylab = expression(q[c](t~"|"~20)),
+     main = "Comparaison Lee-Carter vs ID-SEM",
+     xlim = c(20, 102),
+     ylim = c(0, 1))   
+
+lines(qc_lc$Age, qc_idsem,
+      col = "blue",
+      lwd = 2,
+      lty = 2)
+
+legend("bottomright",
+       legend = c("Lee-Carter reconstruit", "ID-SEM"),
+       col = c("red", "blue"),
+       lty = c(1,2),
+       bty = "n")
+
+
+
