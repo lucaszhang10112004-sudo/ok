@@ -792,3 +792,84 @@ comparer_20_120(1960, rates_fc, res_list)
 comparer_20_120(1970, rates_fc, res_list)
 )
 
+
+
+
+
+
+courbe_empirique_depuis_mx_cohorte <- function(cohorte, rates_fc, ages, S = 20) {
+  
+  ages_sub <- ages[ages >= S]
+  years_cohorte <- cohorte + ages_sub
+  
+  mx_vec <- sapply(seq_along(ages_sub), function(i) {
+    rates_fc[as.character(ages_sub[i]), as.character(years_cohorte[i])]
+  })
+  
+  qx_vec <- 1 - exp(-mx_vec)
+  
+  qc_vec <- numeric(length(qx_vec))
+  qc_vec[1] <- 0
+  
+  for (j in 2:length(qx_vec)) {
+    qc_vec[j] <- 1 - prod(1 - qx_vec[1:(j - 1)])
+  }
+  
+  data.frame(
+    Age = ages_sub,
+    qc_emp = qc_vec
+  )
+}
+
+
+
+
+comparer_empirique_vs_idsem <- function(cohorte, rates_fc, ages_fit, res_list) {
+  
+  df_emp <- courbe_empirique_depuis_mx_cohorte(
+    cohorte = cohorte,
+    rates_fc = rates_fc,
+    ages = ages_fit,
+    S = 20
+  )
+  
+  qc_idsem <- modele_C_cond(
+    df_emp$Age,
+    20,
+    res_list[[as.character(cohorte)]]$par[1],
+    res_list[[as.character(cohorte)]]$par[2],
+    res_list[[as.character(cohorte)]]$par[3],
+    res_list[[as.character(cohorte)]]$par[4]
+  )
+  
+  plot(df_emp$Age, df_emp$qc_emp,
+       type = "l",
+       col = "black",
+       lwd = 2,
+       xlab = "Age",
+       ylab = expression(q[c](t~"|"~20)),
+       main = paste("Courbe empirique vs ID-SEM - cohorte", cohorte),
+       ylim = c(0, 1))
+  
+  lines(df_emp$Age, qc_idsem,
+        col = "blue",
+        lwd = 2,
+        lty = 2)
+  
+  legend("bottomright",
+         legend = c("Empirique depuis mx", "ID-SEM"),
+         col = c("black", "blue"),
+         lty = c(1, 2),
+         lwd = 2,
+         bty = "n")
+}
+
+
+
+comparer_empirique_vs_idsem(1940, rates_fc, ages_fit, res_list)
+comparer_empirique_vs_idsem(1950, rates_fc, ages_fit, res_list)
+comparer_empirique_vs_idsem(1960, rates_fc, ages_fit, res_list)
+comparer_empirique_vs_idsem(1970, rates_fc, ages_fit, res_list)
+
+
+
