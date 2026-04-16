@@ -700,3 +700,151 @@ legend("topright",
        lty = c(1, 2),
        lwd = 2,
        bty = "n")
+
+
+
+
+# ============================================================
+# COMPARAISON : courbe empirique reconstruite depuis mx
+#               vs projection ID-SEM
+# cohortes 1940, 1950, 1960, 1970
+# ============================================================
+
+courbe_empirique_depuis_mx_cohorte <- function(cohorte, rates_fc, ages, S = 20) {
+  
+  years_dispo <- as.numeric(colnames(rates_fc))
+  ages_sub <- ages[ages >= S]
+  years_cohorte <- cohorte + ages_sub
+  
+  ok <- years_cohorte %in% years_dispo
+  
+  ages_ok <- ages_sub[ok]
+  years_ok <- years_cohorte[ok]
+  
+  if (length(ages_ok) == 0) {
+    stop(paste("Aucune année disponible dans rates_fc pour la cohorte", cohorte))
+  }
+  
+  mx_vec <- sapply(seq_along(ages_ok), function(i) {
+    rates_fc[as.character(ages_ok[i]), as.character(years_ok[i])]
+  })
+  
+  # mx -> qx
+  qx_vec <- 1 - exp(-mx_vec)
+  qx_vec[qx_vec < 0 | qx_vec > 1] <- NA_real_
+  
+  # qx -> qc(t|S) = 1 - prod(1-qk)
+  qc_vec <- numeric(length(qx_vec))
+  qc_vec[1] <- 0
+  
+  for (j in 2:length(qx_vec)) {
+    qc_vec[j] <- 1 - prod(1 - qx_vec[1:(j - 1)])
+  }
+  
+  data.frame(
+    Cohorte = cohorte,
+    Age = ages_ok,
+    Year = years_ok,
+    mx = mx_vec,
+    qx = qx_vec,
+    qc_emp = qc_vec
+  )
+}
+
+courbe_idsem_cohorte <- function(cohorte, ages_utiles, res_list, S = 20) {
+  
+  if (!(as.character(cohorte) %in% names(res_list))) {
+    stop(paste("La cohorte", cohorte, "n'existe pas dans res_list"))
+  }
+  
+  pars <- res_list[[as.character(cohorte)]]$par
+  
+  qc_idsem <- modele_C_cond(
+    t = ages_utiles,
+    S = S,
+    alpha = pars[1],
+    beta  = pars[2],
+    gamma = pars[3],
+    kappa = pars[4]
+  )
+  
+  data.frame(
+    Cohorte = cohorte,
+    Age = ages_utiles,
+    qc_idsem = as.numeric(qc_idsem)
+  )
+}
+
+comparer_empirique_vs_idsem <- function(cohorte, rates_fc, ages_fit, res_list, S = 20) {
+  
+  df_emp <- courbe_empirique_depuis_mx_cohorte(
+    cohorte = cohorte,
+    rates_fc = rates_fc,
+    ages = ages_fit,
+    S = S
+  )
+  
+  df_id <- courbe_idsem_cohorte(
+    cohorte = cohorte,
+    ages_utiles = df_emp$Age,
+    res_list = res_list,
+    S = S
+  )
+  
+  plot(df_emp$Age, df_emp$qc_emp,
+       type = "l",
+       col = "black",
+       lwd = 2,
+       xlab = "Age",
+       ylab = expression(q[c](t~"|"~20)),
+       main = paste("Courbe empirique (mx -> qx -> qc) vs ID-SEM - cohorte", cohorte),
+       ylim = c(0, 1))
+  
+  lines(df_id$Age, df_id$qc_idsem,
+        col = "blue",
+        lwd = 2,
+        lty = 2)
+  
+  legend("bottomright",
+         legend = c("Courbe empirique reconstruite", "Projection ID-SEM"),
+         col = c("black", "blue"),
+         lty = c(1, 2),
+         lwd = 2,
+         bty = "n")
+}
+
+resume_erreur_emp_vs_idsem <- function(cohorte, rates_fc, ages_fit, res_list, S = 20) {
+  
+  df_emp <- courbe_empirique_depuis_mx_cohorte(
+    cohorte = cohorte,
+    rates_fc = rates_fc,
+    ages = ages_fit,
+    S = S
+  )
+  
+  df_id <- courbe_idsem_cohorte(
+    cohorte = cohorte,
+    ages_utiles = df_emp$Age,
+    res_list = res_list,
+    S = S
+  )
+  
+  data.frame(
+    Cohorte = cohorte,
+    RMSE = sqrt(mean((df_emp$qc_emp - df_id$qc_idsem)^2, na.rm = TRUE)),
+    MAE  = mean(abs(df_emp$qc_emp - df_id$qc_idsem), na.rm = TRUE)
+  )
+}
+
+comparer_empirique_vs_idsem(1940, rates_fc, ages_fit, res_list, S = 20)
+comparer_empirique_vs_idsem(1950, rates_fc, ages_fit, res_list, S = 20)
+comparer_empirique_vs_idsem(1960, rates_fc, ages_fit, res_list, S = 20)
+comparer_empirique_vs_idsem(1970, rates_fc, ages_fit, res_list, S = 20)
+
+rbind(
+  resume_erreur_emp_vs_idsem(1940, rates_fc, ages_fit, res_list, S = 20),
+  resume_erreur_emp_vs_idsem(1950, rates_fc, ages_fit, res_list, S = 20),
+  resume_erreur_emp_vs_idsem(1960, rates_fc, ages_fit, res_list, S = 20),
+  resume_erreur_emp_vs_idsem(1970, rates_fc, ages_fit, res_list, S = 20)
+)
+
