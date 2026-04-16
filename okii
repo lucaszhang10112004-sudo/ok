@@ -1,0 +1,577 @@
+
+FILE_PATH   <- "France_1x1.txt"
+AGE_MIN     <- 20
+T_SEUIL     <- 50
+ANNEE_DEBUT <- 1890
+ANNEE_FIN   <- 1929  # Jusqu'où on va chercher l'historique
+ANNEE_CIBLE <- c(1940, 1950, 1960, 1970)  # L'année qu'on veut prédire/tester
+PAS_TEMPS   <- 1     # On regarde tous les 2 ans
+
+
+cohortes <- seq(ANNEE_DEBUT, ANNEE_FIN, PAS_TEMPS)
+#cohortes <- c(seq(ANNEE_DEBUT, 1914, PAS_TEMPS),seq(1920, ANNEE_FIN, PAS_TEMPS))
+
+# Vérification du fichier
+if(!file.exists(FILE_PATH)) stop("Fichier introuvable !")
+
+# Importation et nettoyage en un seul bloc fluide
+FILE_PATH   <- "France_1x1.txt"
+AGE_MIN     <- 20
+T_SEUIL     <- 50
+ANNEE_DEBUT <- 1890
+ANNEE_FIN   <- 1929
+ANNEE_CIBLE <- c(1940, 1950, 1960, 1970)
+PAS_TEMPS   <- 1
+
+cohortes <- seq(ANNEE_DEBUT, ANNEE_FIN, PAS_TEMPS)
+
+if (!file.exists(FILE_PATH)) stop("Fichier introuvable !")
+
+
+donnees_globales <- read.table(FILE_PATH, header = TRUE, na.strings = ".", skip= 2)
+
+donnees_globales <- donnees_globales %>%
+  mutate(
+    Age = parse_number(as.character(Age)),
+    Year = as.numeric(Year),
+    lx = as.numeric(lx)
+  ) %>%
+  filter(Age >= AGE_MIN) %>%
+  group_by(Year) %>%
+  mutate(
+    l_ref = first(lx),
+    F_empirique = 1 - (lx / l_ref)
+  ) %>%
+  ungroup() %>%
+  filter(!is.na(F_empirique))
+
+for (i in seq(cohortes[1],cohortes[length(cohortes)], 1)){
+  donnees_globales[donnees_globales$Year==i,]$F_empirique <- 1-(donnees_globales[donnees_globales$Year==i,]$lx/donnees_globales[donnees_globales$Year==i,]$lx[1])
+}
+
+
+# ==============================================================================
+# 2. DÉFINITION DU MODÈLE C (Exponentiel)
+# ==============================================================================
+
+# Fonction de répartition (CDF)
+xc <- 1000
+S <- 20
+
+Delta <- function(t, ac, bc){
+  return(exp(ac*t) + bc*t - 1)
+}
+
+modele_C_CDF <- function(t, ac, bc, sc, xc){
+  return(pnorm(sqrt(sc/xc)*(Delta(t, ac, bc)-xc))-exp(2*sc*Delta(t, ac, bc))*pnorm(-sqrt(sc/xc)*(Delta(t, ac, bc)+xc)))
+}
+
+# Probabilité conditionnelle (Fonction utilisée pour le fit)
+modele_C_cond <- function(t, S, alpha, beta, gamma, xc) {
+  F_t <- modele_C_CDF(t, alpha, beta, gamma, xc)
+  F_S <- modele_C_CDF(S, alpha, beta, gamma, xc)
+  return((F_t - F_S) / (1 - F_S))
+}
+
+# Fonction d'erreur (Somme des carrés)
+erreur_C <- function(params, data) {
+  a <- as.numeric(params[1])
+  b <- as.numeric(params[2])
+  g <- as.numeric(params[3])
+
+  if (a < 0 || b < 0 || g < 0) return(1e9)
+  
+  pred <- modele_C_cond(data$Age, 20, a, b, g, xc)
+  return(sum((pred - data$F_empirique)^2))
+}
+
+age <- donnees_globales[donnees_globales$Year==ANNEE_DEBUT,]$Age
+
+data_year <- donnees_globales %>% filter(Year == ANNEE_DEBUT)
+res <- optim(
+  par = c(0.06, 25, 0.005),
+  fn  = erreur_C,
+  data = data_year
+)
+
+courbe_ajustee <- modele_C_cond(age, AGE_MIN, res$par[1], res$par[2], res$par[3], xc)
+plot(age,courbe_ajustee)
+lines(age, data_year$F_empirique, col="red")
+
+
+fit_modelC_while <- function(data, seuil = 0.1, max_tries = 10000, seed = 42) {
+  set.seed(seed)
+
+  lower <- c(alpha = 0.04, beta = 10, gamma = 0.005)
+  upper <- c(alpha =  0.06, beta =  35, gamma = 0.01)
+
+  tries <- 0
+
+  while (tries < max_tries) {
+    tries <- tries + 1
+
+    p0 <- c(
+      alpha = runif(1, lower["alpha"], upper["alpha"]),
+      beta  = runif(1, lower["beta"],  upper["beta"]),
+      gamma = runif(1, lower["gamma"], upper["gamma"])
+    )
+    
+    res_keep <- 1
+    res_par <- 0
+    
+    val <- erreur_C(p0, data_year)
+    if (is.nan(val)) next
+
+    res <- tryCatch(
+      optim(
+      par = p0,
+      fn = erreur_C,
+      data = data,
+      method = "L-BFGS-B",
+      lower = lower,
+      upper = upper
+        ),
+      error = function(e) NULL
+      )
+
+    if (is.null(res)) next
+
+    if (is.finite(res$value) && res$value < seuil) {
+      res$par <- setNames(res$par, c("alpha", "beta", "gamma"))
+      res$tries <- tries
+      return(res)
+    }
+    
+    if (res_keep > res$value){
+      res_keep <- res$value
+      res_par <- res$par
+    }
+
+    if (tries %% 100 == 0) {
+      message("tries = ", tries, " | current value = ", res_keep,  "pour les paramètres", res_par)
+    }
+  }
+
+  cat("Aucun fit trouvé sous le seuil après ", max_tries, " essais.", "le meilleur fit trouvé est ", res_keep, "pour les paramètres ", res_par)
+  return(list(par = res_par, value = res_keep))
+}
+
+# ==========================================
+# 4) Exemple d'usage
+# ==========================================
+# Constantes globales utilisées par qcA / erreur_C
+AGE_MIN <- 20
+T <- 50
+x_c <- 1000
+
+# Si tu pars d'un tableau lx :
+# donnee_test <- make_qhat_cond_from_lx(data_year, S = AGE_MIN)
+
+fit <- fit_modelC_while(
+  data = data_year,
+  seuil = 0.01,
+  max_tries = 1000,
+  seed = 42
+)
+
+
+courbe_ajustee <- modele_C_cond(age, AGE_MIN, fit$par[1], fit$par[2], fit$par[3], xc)
+plot(age,courbe_ajustee)
+lines(age, data_year$F_empirique, col="red")
+
+# ==============================================================================
+# 3. HISTORIQUE DES PARAMÈTRES 
+# ==============================================================================
+
+resultats_historique <- data.frame(Cohorte = cohortes, alpha = NA, beta = NA, gamma = NA)
+res <- fit
+
+cat("Calibration historique en cours...\n")
+
+for (i in seq_along(cohortes)) {
+  annee <- cohortes[i]
+  data_year <- donnees_globales %>% filter(Year == annee)
+  
+  if(nrow(data_year) > 0) {
+    # Optimisation avec gestion d'erreur
+    try({
+      res <- optim(par = c(res$par[1],res$par[2], res$par[3]), 
+                   fn = erreur_C, 
+                   data = data_year) # On passe les données en argument
+      
+      resultats_historique[i, 2:4] <- res$par
+    }, silent = TRUE)
+  }
+}
+
+
+# ==============================================================================
+# 4. PROJECTION (MÉTHODE SHIMIZU)
+# ==============================================================================
+
+# A. Régression Linéaire sur les paramètres historiques
+fit_alpha <- lm(-log(alpha) ~ Cohorte, data = resultats_historique)
+fit_beta  <- lm(-log(beta)  ~ Cohorte, data = resultats_historique)
+fit_gamma <- lm(gamma ~ Cohorte, data = resultats_historique)
+
+#ABIS prédiction des paramétres 
+pred_alpha <- exp(-(predict(fit_alpha, newdata = data.frame(Cohorte = c(cohortes,ANNEE_CIBLE), se.fit = TRUE))))
+pred_beta <- exp(-(predict(fit_beta, newdata = data.frame(Cohorte = c(cohortes,ANNEE_CIBLE), se.fit = TRUE))))
+pred_gamma <- predict(fit_gamma, newdata = data.frame(Cohorte = c(cohortes,ANNEE_CIBLE), se.fit = TRUE))
+
+# B. Fonction utilitaire pour calculer les bornes (évite la répétition de code)
+calculer_bornes <- function(model_lm, annee_cible, z_score, pred) {
+  pred <- predict(model_lm, newdata = data.frame(Cohorte = annee_cible), se.fit = TRUE)
+  
+  # Incertitude totale = Erreur modèle + Bruit historique (Sigma)
+  se_total <- sqrt(pred$se.fit^2 + summary(model_lm)$sigma^2)
+  
+  list(
+    valeur = pred$fit,
+    min = pred$fit - z_score * se_total, # max(0) pour éviter le négatif
+    max = pred$fit + z_score * se_total
+  )
+}
+
+# Cas beta : modèle sur y = -log(beta), donc IC sur y puis transformation beta = exp(-y)
+calculer_bornes_beta <- function(model_lm_beta, annee_cible, z_score) {
+  pred <- predict(
+    model_lm_beta,
+    newdata = data.frame(Cohorte = annee_cible),
+    se.fit = TRUE
+  )
+
+  se_total <- sqrt(pred$se.fit^2 + summary(model_lm_beta)$sigma^2)
+
+  y_hat <- pred$fit
+  y_min <- y_hat - z_score * se_total
+  y_max <- y_hat + z_score * se_total
+
+  beta_hat <- exp(-y_hat)
+  beta_min <- exp(-y_max)   # inversion (car exp(-y) décroît)
+  beta_max <- exp(-y_min)
+
+  list(
+    valeur = beta_hat,
+    min = beta_min,  # <- vectorisé
+    max = beta_max
+  )
+}
+
+# C. Calcul des bornes pour l'année cible
+z <- qnorm(1 - 0.05/2) # Intervalle à 95%
+
+bornes_alpha <- calculer_bornes_beta(fit_alpha, ANNEE_CIBLE, z)
+bornes_beta  <- calculer_bornes_beta(fit_beta,  ANNEE_CIBLE, z)
+bornes_gamma <- calculer_bornes(fit_gamma, ANNEE_CIBLE, z)
+
+# On regroupe tout pour l'optimiseur
+limites_inf <- c(bornes_alpha$min, bornes_beta$min, bornes_gamma$min)
+limites_sup <- c(bornes_alpha$max, bornes_beta$max, bornes_gamma$max)
+points_depart <- c(bornes_alpha$valeur, bornes_beta$valeur, bornes_gamma$valeur)
+
+cat("Bornes calculées pour", ANNEE_CIBLE, ":\n")
+print(data.frame(Param=c("a","b","g"), Min=limites_inf, Max=limites_sup))
+
+df_pred <- data.frame(
+  cohortes = c(cohortes, ANNEE_CIBLE),
+  alpha = pred_alpha,
+  beta = pred_beta,
+  gamma = pred_gamma
+)
+
+ttt <- c(cohortes, ANNEE_CIBLE)
+
+df_pred_pts <- tail(df_pred, 4)
+
+df_gamma_cible <- df_pred[df_pred$cohortes %in% ANNEE_CIBLE, ]
+
+
+ggplot(resultats_historique, aes(cohortes, alpha)) +
+  geom_point() +
+  geom_point(
+    data = df_gamma_cible,
+    aes(cohortes, alpha),
+    color = "red",
+    size = 2
+  ) +
+  geom_line(data = df_pred, aes(cohortes, alpha), color = "red") +
+  xlim(min(cohortes), max(ANNEE_CIBLE)) +     
+  ylim(min(resultats_historique$alpha)-2*min(resultats_historique$alpha), 2 * max(resultats_historique$alpha)) + 
+  theme_minimal()
+
+"---------------------"
+
+
+ggplot(resultats_historique, aes(cohortes, beta)) +
+  geom_point() +
+  geom_point(
+    data = df_gamma_cible,
+    aes(cohortes, beta),
+    color = "red",
+    size = 2
+  ) +
+  geom_line(data = df_pred, aes(cohortes, beta), color = "red") +
+  xlim(min(cohortes), max(ANNEE_CIBLE)) +     
+  ylim(min(resultats_historique$beta)-5*min(resultats_historique$beta), 2 * max(resultats_historique$beta)) + 
+  theme_minimal()
+
+"---------------------"
+
+
+ggplot(resultats_historique, aes(cohortes, gamma)) +
+  geom_point() +
+  geom_point(
+    data = df_gamma_cible,
+    aes(cohortes, gamma),
+    color = "red",
+    size = 2
+  ) +
+  geom_line(data = df_pred, aes(cohortes, gamma), color = "red") +
+  xlim(min(cohortes), max(ANNEE_CIBLE)) +     
+  ylim(min(resultats_historique$gamma)-0.001, 3 * max(resultats_historique$gamma)) + 
+  theme_minimal()
+
+max(resultats_historique$gamma)
+
+# ==============================================================================
+# 4. PROJECTION (MÉTHODE SHIMIZU) — VERSION CORRIGÉE POUR beta
+# ==============================================================================
+
+# A. Régression linéaire sur les paramètres historiques
+fit_alpha <- lm(alpha ~ Cohorte, data = resultats_historique)
+fit_beta  <- lm(-log(beta) ~ Cohorte, data = resultats_historique)   # y = -log(beta)
+fit_gamma <- lm(gamma ~ Cohorte, data = resultats_historique)
+
+# ABIS prédiction des paramètres (sur grille cohortes + année cible)
+grid_coh <- c(cohortes, ANNEE_CIBLE)
+
+pred_alpha <- predict(
+  fit_alpha,
+  newdata = data.frame(Cohorte = grid_coh),
+  se.fit = TRUE
+)
+
+pred_beta_y <- predict(   # prédiction sur l'échelle y = -log(beta)
+  fit_beta,
+  newdata = data.frame(Cohorte = grid_coh),
+  se.fit = TRUE
+)
+
+pred_gamma <- predict(
+  fit_gamma,
+  newdata = data.frame(Cohorte = grid_coh),
+  se.fit = TRUE
+)
+
+# Back-transform vers beta
+pred_beta <- exp(-pred_beta_y$fit)
+
+# ------------------------------------------------------------------------------
+# B. Fonction utilitaire pour calculer les bornes (corrigée pour beta)
+# ------------------------------------------------------------------------------
+
+# Cas général (alpha, gamma) : identité (valeur +/- z * se_total), tronqué à 0
+calculer_bornes <- function(model_lm, annee_cible, z_score) {
+  pred <- predict(model_lm, newdata = data.frame(Cohorte = annee_cible), se.fit = TRUE)
+
+  se_total <- sqrt(pred$se.fit^2 + summary(model_lm)$sigma^2)
+
+  list(
+    valeur = pred$fit,
+    min = pred$fit - z_score * se_total,
+    max = pred$fit + z_score * se_total
+  )
+}
+
+# Cas beta : modèle sur y = -log(beta), donc IC sur y puis transformation beta = exp(-y)
+calculer_bornes_beta <- function(model_lm_beta, annee_cible, z_score) {
+  pred <- predict(
+    model_lm_beta,
+    newdata = data.frame(Cohorte = annee_cible),
+    se.fit = TRUE
+  )
+
+  se_total <- sqrt(pred$se.fit^2 + summary(model_lm_beta)$sigma^2)
+
+  y_hat <- pred$fit
+  y_min <- y_hat - z_score * se_total
+  y_max <- y_hat + z_score * se_total
+
+  beta_hat <- exp(-y_hat)
+  beta_min <- exp(-y_max)   # inversion (car exp(-y) décroît)
+  beta_max <- exp(-y_min)
+
+  list(
+    valeur = beta_hat,
+    min = beta_min,  # <- vectorisé
+    max = beta_max
+  )
+}
+
+# ------------------------------------------------------------------------------
+# C. Calcul des bornes pour l'année cible
+# ------------------------------------------------------------------------------
+
+z <- qnorm(1 - 0.05/2)  # 95%
+
+bornes_alpha <- calculer_bornes(fit_alpha, ANNEE_CIBLE, z)
+bornes_beta  <- calculer_bornes_beta(fit_beta, ANNEE_CIBLE, z)
+bornes_gamma <- calculer_bornes(fit_gamma, ANNEE_CIBLE, z)
+
+# On regroupe tout pour l'optimiseur
+limites_inf  <- c(bornes_alpha$min,    bornes_beta$min,    bornes_gamma$min)
+limites_sup  <- c(bornes_alpha$max,    bornes_beta$max,    bornes_gamma$max)
+points_depart <- c(bornes_alpha$valeur, bornes_beta$valeur, bornes_gamma$valeur)
+
+cat("Bornes calculées pour", ANNEE_CIBLE, ":\n")
+print(data.frame(Param = c("a","b","g"), Min = limites_inf, Max = limites_sup))
+
+# ------------------------------------------------------------------------------
+# D. DataFrame de prédiction (courbe)
+# ------------------------------------------------------------------------------
+
+df_pred <- data.frame(
+  cohortes = grid_coh,
+  alpha = pred_alpha$fit,
+  beta  = pred_beta,
+  gamma = pred_gamma$fit
+)
+
+df_pred_pts <- tail(df_pred, 4)
+
+df_cible <- df_pred[df_pred$cohortes %in% ANNEE_CIBLE, ]
+
+
+# ------------------------------------------------------------------------------
+# E. Plots
+# ------------------------------------------------------------------------------
+
+library(ggplot2)
+
+ggplot(resultats_historique, aes(cohortes, alpha)) +
+  geom_point() +
+  geom_point(
+    data = df_cible,
+    aes(cohortes, alpha),
+    color = "red",
+    size = 2
+  ) +
+  geom_line(data = df_pred, aes(cohortes, alpha), color = "red") +
+  xlim(min(cohortes), max(ANNEE_CIBLE)) +
+  ylim(min(resultats_historique$alpha) - 2*min(resultats_historique$alpha),
+       2 * max(resultats_historique$alpha)) +
+  theme_minimal()
+
+"---------------------"
+
+ggplot(resultats_historique, aes(cohortes, beta)) +
+  geom_point() +
+  geom_point(
+    data = df_cible,
+    aes(cohortes, beta),
+    color = "red",
+    size = 2
+  ) +
+  geom_line(data = df_pred, aes(cohortes, beta), color = "red") +
+  xlim(min(cohortes), max(ANNEE_CIBLE)) +
+  ylim(min(resultats_historique$beta) - 5*min(resultats_historique$beta),
+       2 * max(resultats_historique$beta)) +
+  theme_minimal()
+
+"---------------------"
+
+ggplot(resultats_historique, aes(cohortes, gamma)) +
+  geom_point() +
+  geom_point(
+    data = df_cible,
+    aes(cohortes, gamma),
+    color = "red",
+    size = 2
+  ) +
+  geom_line(data = df_pred, aes(cohortes, gamma), color = "red") +
+  xlim(min(cohortes), max(ANNEE_CIBLE)) +
+  ylim(min(resultats_historique$gamma) - 0.001,
+       3 * max(resultats_historique$gamma)) +
+  theme_minimal()
+
+max(resultats_historique$gamma)
+
+
+limites_inf  <- list(alpha_min=bornes_alpha$min,    beta_min=bornes_beta$min,    gamma_min=bornes_gamma$min)
+limites_sup  <- list(alpha_min=bornes_alpha$max,    beta_min=bornes_beta$max,    gamma_min=bornes_gamma$max)
+points_depart <- list(alpha_min=bornes_alpha$valeur,    beta_min=bornes_beta$valeur,    gamma_min=bornes_gamma$valeur)
+
+cat(limites_inf$gamma_min, '\n')
+cat(limites_sup$gamma_min)
+
+### Prédiction par estimation sur intervalle de confiance
+
+
+estimer_parametres_par_cohorte <- function(
+  donnees_globales,
+  annees_cibles,
+  points_depart,   # list(alpha_min=..., beta_min=..., gamma_min=...)
+  limites_inf,     # list(alpha_min=..., beta_min=..., gamma_min=...)
+  limites_sup,     # list(alpha_min=..., beta_min=..., gamma_min=...)
+  erreur_C
+) {
+  stopifnot(
+    length(points_depart$alpha_min) == length(annees_cibles),
+    length(points_depart$beta_min)  == length(annees_cibles),
+    length(points_depart$gamma_min) == length(annees_cibles)
+  )
+
+  res_list <- vector("list", length(annees_cibles))
+  names(res_list) <- as.character(annees_cibles)
+
+  for (i in seq_along(annees_cibles)) {
+    annee <- annees_cibles[i]
+
+    donnees_cible <- donnees_globales %>% filter(Year == annee)
+
+    par_i   <- c(points_depart$alpha_min[i], points_depart$beta_min[i], points_depart$gamma_min[i])
+    lower_i <- c(limites_inf$alpha_min[i],   limites_inf$beta_min[i],   limites_inf$gamma_min[i])
+    upper_i <- c(limites_sup$alpha_min[i],   limites_sup$beta_min[i],   limites_sup$gamma_min[i])
+
+    res <- optim(
+      par    = par_i,
+      fn     = erreur_C,
+      data   = donnees_cible,
+      method = "L-BFGS-B",
+      lower  = lower_i,
+      upper  = upper_i
+    )
+
+    res_list[[as.character(annee)]] <- list(
+      Year = annee,
+      par = setNames(res$par, c("alpha", "beta", "gamma")),
+      value = res$value
+    )
+  }
+
+  res_list
+}
+res_list <- estimer_parametres_par_cohorte(
+  donnees_globales,
+  ANNEE_CIBLE,
+  points_depart,   
+  limites_inf,     
+  limites_sup,     
+  erreur_C
+) 
+
+
+age <- donnees_globales[donnees_globales$Year==ANNEE_FIN,]$Age
+
+plot(age, modele_C_cond(age,20, res_list$`1940`$par[1], res_list$`1940`$par[2], res_list$`1940`$par[3], xc), type="l", lty=2, col="blue", lwd=2,
+     main = "(c) Projection model IG SEM pour c=1940", xlab="Age", ylab="qc(t)")
+
+plot(age, modele_C_cond(age,20, res_list$`1950`$par[1], res_list$`1950`$par[2], res_list$`1950`$par[3], xc), type="l", lty=2, col="blue", lwd=2,
+     main = "(c) Projection model IG SEM pour c=1950", xlab="Age", ylab="qc(t)")
+
+plot(age, modele_C_cond(age,20, res_list$`1960`$par[1], res_list$`1960`$par[2], res_list$`1960`$par[3], xc), type="l", lty=2, col="blue", lwd=2,
+     main = "(c) Projection model IG SEM pour c=1960", xlab="Age", ylab="qc(t)")
+
+plot(age, modele_C_cond(age,20, res_list$`1970`$par[1], res_list$`1970`$par[2], res_list$`1970`$par[3], xc), type="l", lty=2, col="blue", lwd=2,
+     main = "(c) Projection model IG SEM pour c=1970", xlab="Age", ylab="qc(t)")
