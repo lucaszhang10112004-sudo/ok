@@ -575,3 +575,163 @@ plot(age, modele_C_cond(age,20, res_list$`1960`$par[1], res_list$`1960`$par[2], 
 
 plot(age, modele_C_cond(age,20, res_list$`1970`$par[1], res_list$`1970`$par[2], res_list$`1970`$par[3], xc), type="l", lty=2, col="blue", lwd=2,
      main = "(c) Projection model IG SEM pour c=1970", xlab="Age", ylab="qc(t)")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ============================================================
+# COMPARAISON LEE-CARTER / IG-SEM PAR COHORTE
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. Reconstruction Lee-Carter -> qx -> q_c(t|20)
+# ------------------------------------------------------------
+reconstruire_qc_lc_cohorte <- function(cohorte, rates_fc, ages, S = 20) {
+  
+  years_fc <- as.numeric(colnames(rates_fc))
+  
+  ages_sub <- ages[ages >= S]
+  years_coh <- cohorte + ages_sub
+  
+  # on garde seulement les couples âge-année disponibles
+  ok <- years_coh %in% years_fc
+  
+  ages_ok <- ages_sub[ok]
+  years_ok <- years_coh[ok]
+  
+  # extraction des mx Lee-Carter le long de la cohorte
+  mx_vec <- sapply(seq_along(ages_ok), function(i) {
+    rates_fc[as.character(ages_ok[i]), as.character(years_ok[i])]
+  })
+  
+  # mx -> qx
+  qx <- 1 - exp(-mx_vec)
+  qx[qx < 0 | qx > 1] <- NA
+  
+  # qx -> q_c(t|S)
+  qc <- numeric(length(qx))
+  qc[1] <- 0
+  
+  for (j in 2:length(qx)) {
+    qc[j] <- 1 - prod(1 - qx[1:(j - 1)])
+  }
+  
+  data.frame(
+    Cohorte = cohorte,
+    Age = ages_ok,
+    Year = years_ok,
+    mx_lc = mx_vec,
+    qx_lc = qx,
+    qc_lc = qc
+  )
+}
+
+# ------------------------------------------------------------
+# 2. Extraction IG-SEM sur les mêmes âges
+# ------------------------------------------------------------
+extraire_qc_igsem_cohorte <- function(cohorte, ages_utiles, res_list, xc = 1000) {
+  
+  pars <- res_list[[as.character(cohorte)]]$par
+  
+  qc_igsem <- modele_C_cond(
+    t = ages_utiles,
+    S = 20,
+    alpha = pars[1],
+    beta  = pars[2],
+    gamma = pars[3],
+    xc    = xc
+  )
+  
+  data.frame(
+    Cohorte = cohorte,
+    Age = ages_utiles,
+    qc_igsem = as.numeric(qc_igsem)
+  )
+}
+
+# ------------------------------------------------------------
+# 3. Fusion comparaison pour une cohorte
+# ------------------------------------------------------------
+extraire_comparaison_LC_IGSEM <- function(cohorte, rates_fc, ages_fit, res_list, xc = 1000) {
+  
+  df_lc <- reconstruire_qc_lc_cohorte(
+    cohorte = cohorte,
+    rates_fc = rates_fc,
+    ages = ages_fit,
+    S = 20
+  )
+  
+  df_ig <- extraire_qc_igsem_cohorte(
+    cohorte = cohorte,
+    ages_utiles = df_lc$Age,
+    res_list = res_list,
+    xc = xc
+  )
+  
+  df_comp <- merge(df_lc, df_ig, by = c("Cohorte", "Age"))
+  
+  return(df_comp)
+}
+
+# ------------------------------------------------------------
+# 4. Fonction de tracé d'une cohorte
+# ------------------------------------------------------------
+comparer_cohorte_LC_IGSEM <- function(cohorte, rates_fc, ages_fit, res_list, xc = 1000) {
+  
+  df_comp <- extraire_comparaison_LC_IGSEM(
+    cohorte = cohorte,
+    rates_fc = rates_fc,
+    ages_fit = ages_fit,
+    res_list = res_list,
+    xc = xc
+  )
+  
+  plot(df_comp$Age, df_comp$qc_lc,
+       type = "l",
+       col = "red",
+       lwd = 2,
+       xlab = "Age",
+       ylab = expression(q[c](t~"|"~20)),
+       main = paste("Comparaison Lee-Carter / IG-SEM - cohorte", cohorte),
+       ylim = c(0, 1))
+  
+  lines(df_comp$Age, df_comp$qc_igsem,
+        col = "blue",
+        lwd = 2,
+        lty = 2)
+  
+  legend("bottomright",
+         legend = c("Lee-Carter", "IG-SEM"),
+         col = c("red", "blue"),
+         lty = c(1, 2),
+         lwd = 2,
+         bty = "n")
+}
+
+# ------------------------------------------------------------
+# 5. Lancer les comparaisons cohorte par cohorte
+# ------------------------------------------------------------
+comparer_cohorte_LC_IGSEM(1940, rates_fc, ages_fit, res_list, xc = 1000)
+comparer_cohorte_LC_IGSEM(1950, rates_fc, ages_fit, res_list, xc = 1000)
+comparer_cohorte_LC_IGSEM(1960, rates_fc, ages_fit, res_list, xc = 1000)
+comparer_cohorte_LC_IGSEM(1970, rates_fc, ages_fit, res_list, xc = 1000)
+
+
