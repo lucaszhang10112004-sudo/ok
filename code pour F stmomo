@@ -1,0 +1,94 @@
+F_cond_StMoMo <- function(fit_LC, year, S = 20, age_max = 120){
+
+ 
+
+  mx_all <- fitted(fit_LC, type = "rates")
+
+ 
+
+  if(!(as.character(year) %in% colnames(mx_all))){
+
+    stop("Année non disponible dans le fit.")
+
+  }
+
+ 
+
+  ages <- as.numeric(rownames(mx_all))
+
+  mx <- mx_all[, as.character(year)]
+
+ 
+
+  if(!(S %in% ages)){
+
+    stop("L'âge S n'est pas présent dans les âges du modèle.")
+
+  }
+
+ 
+
+  if(!((age_max - 1) %in% ages)){
+
+    stop("Il faut que l'âge age_max-1 soit présent dans les données.")
+
+  }
+
+ 
+
+  # q_k et p_k
+
+  qx <- 1 - exp(-mx)
+
+  px <- 1 - qx
+
+ 
+
+  # âges k = S,...,age_max-1
+
+  idx <- which(ages >= S & ages <= age_max - 1)
+
+  px_sub <- px[idx]
+
+ 
+
+  # Pour t = S,...,age_max
+
+  # t=S : produit vide = 1 donc F=0
+
+  F_cond <- numeric(length = age_max - S + 1)
+
+  names(F_cond) <- S:age_max
+
+ 
+
+  F_cond[1] <- 0
+
+ 
+
+  for(j in 2:length(F_cond)){
+
+    F_cond[j] <- 1 - prod(px_sub[1:(j-1)])
+
+  }
+
+ 
+
+  return(F_cond)
+
+}
+
+ 
+
+F_1940 <- F_cond_StMoMo(fit_leec, year = 1960, S = 20, age_max = 95)
+
+ 
+
+valueStMoMo <-  F_cond_StMoMo(fit_leec, year = 1960, S = 20, age_max = 95)
+
+
+
+plot(age, modele_C_cond(age,20, res_list$`1960`$par[1], res_list$`1960`$par[2], res_list$`1960`$par[3], res_list$`1960`$par[4]), type="l", lty=2, col="blue", lwd=2,
+     main = "(c) Projection model C pour c=1960", xlab="Age", ylab="qc(t)")
+lines(20:95,  valueStMoMo, col = "red", lwd = 2)
+```
